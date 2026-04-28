@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🖤 Black Telbot 🤍
+#  Black Telbot 
 ### Advanced Multi-User Telegram to Google Drive Assistant
 
 ![Python](https://img.shields.io/badge/Python-3.9+-black.svg?style=for-the-badge&logo=python&logoColor=white)
