@@ -6,7 +6,7 @@
 BOT_DIR="/root/black_telbot"
 SERVICE_NAME="blacktelbot.service"
 # Replace the URL below with your raw GitHub link after uploading main_bot.py
-GITHUB_RAW_URL="https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/main_bot.py"
+GITHUB_RAW_URL="https://raw.githubusercontent.com/saeederamy/black-telbot/main/main_bot.py"
 
 # Register globally
 if [[ "$0" != "/usr/local/bin/black-telbot" ]]; then
