@@ -10,6 +10,7 @@ from googleapiclient.http import MediaFileUpload
 # CONFIGURATION 
 # ==========================================
 BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+USE_LOCAL_API = False  # Changed automatically by setup.sh
 LOCAL_API_URL = "http://localhost:8081" 
 CREDS_DIR = "creds"
 DOWNLOADS_DIR = "downloads"
@@ -20,9 +21,6 @@ os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 user_states = {}
 user_urls = {}
 
-# ==========================================
-# GOOGLE DRIVE LOGIC
-# ==========================================
 def upload_to_drive(file_path, user_id):
     cred_file = os.path.join(CREDS_DIR, f"{user_id}.json")
     if not os.path.exists(cred_file):
@@ -30,15 +28,11 @@ def upload_to_drive(file_path, user_id):
     scopes = ['https://www.googleapis.com/auth/drive.file']
     creds = service_account.Credentials.from_service_account_file(cred_file, scopes=scopes)
     service = build('drive', 'v3', credentials=creds)
-    
     file_metadata = {'name': os.path.basename(file_path)}
     media = MediaFileUpload(file_path, resumable=True)
     file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
     return file.get('webViewLink')
 
-# ==========================================
-# BOT HANDLERS
-# ==========================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_states[update.effective_user.id] = None
     keyboard = [
@@ -59,7 +53,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = query.from_user.id
     cred_file_path = os.path.join(CREDS_DIR, f"{uid}.json")
 
-    # --- ABOUT & DONATE SECTION ---
     if query.data == 'menu_about':
         about_text = (
             "🖤 *BLACK TELBOT* 🤍\n"
@@ -71,11 +64,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🪙 *Litecoin (LTC) Address:*\n"
             "`ltc1qxhuvs6j0suvv50nqjsuujqlr3u4ekfmys2ydps`\n"
         )
-        await query.edit_message_text(
-            about_text, 
-            parse_mode="Markdown", 
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back')]], disable_web_page_preview=True)
-        )
+        await query.edit_message_text(about_text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back')]], disable_web_page_preview=True))
 
     elif query.data == 'menu_dl':
         user_states[uid] = 'WAIT_URL'
@@ -99,7 +88,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(guide_text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back')]]))
         else:
             user_states[uid] = 'WAIT_FILE'
-            await query.edit_message_text("📁 Great! Send me the file (Up to 2GB) to upload to your Drive: 🖤", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back')]]))
+            await query.edit_message_text("📁 Great! Send me the file to upload to your Drive: 🖤", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back')]]))
     
     elif query.data == 'menu_setup':
         user_states[uid] = 'WAIT_JSON'
@@ -144,7 +133,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ No valid file found.")
             return
         
-        msg = await update.message.reply_text("⏳ Downloading large file to server... 🤍")
+        msg = await update.message.reply_text("⏳ Downloading file to server... 🤍")
         file = await attachment.get_file()
         file_name = attachment.file_name if hasattr(attachment, 'file_name') else f"ul_{uid}.dat"
         path = os.path.join(DOWNLOADS_DIR, file_name)
@@ -203,9 +192,16 @@ async def start_download(update, message, url, q):
         await message.edit_text("❌ Error downloading file. Link might be private.")
 
 def main():
-    # CONNECTING TO LOCAL API SERVER (Port 8081)
-    app = Application.builder().token(BOT_TOKEN).base_url(f"{LOCAL_API_URL}/bot").local_mode(True).build()
+    builder = Application.builder().token(BOT_TOKEN)
     
+    # Conditional logic based on bash script choice
+    if USE_LOCAL_API:
+        builder = builder.base_url(f"{LOCAL_API_URL}/bot").local_mode(True)
+        print("Starting in HEAVY MODE (Local API)")
+    else:
+        print("Starting in STANDARD MODE (Cloud API)")
+        
+    app = builder.build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(handle_callbacks))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_messages))
