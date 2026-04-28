@@ -46,7 +46,7 @@ To run a Local API Server (which allows the 2GB limit), you need developer API k
 Connect to your Ubuntu server (SSH) and run the following commands to install everything automatically:
 
 ```bash
-wget [https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/YOUR_REPO_NAME/main/setup.sh](https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/YOUR_REPO_NAME/main/setup.sh)
+wget [https://raw.githubusercontent.com/saeederamy/black-telbot/main/setup.sh]
 chmod +x setup.sh
 ./setup.sh
 ```
@@ -83,17 +83,4 @@ For end-users to upload files to their personal Google Drive, they must provide 
 Send the `credentials.json` file to Black Telbot in Telegram. You can now send files up to 2GB to the bot, and they will appear directly in your shared Google Drive folder!
 
 ---
-
-## 💻 Source Codes
-
-Here are the complete source files used in this project.
-
-### 1. The Global Bash Manager (`setup.sh`)
-This script installs Docker, sets up the Local API, downloads the Python code, and creates a systemd background service.
-
-```bash
-wget https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/setup.sh
-chmod +x setup.sh
-./setup.sh
-```
 
