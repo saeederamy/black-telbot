@@ -11,18 +11,19 @@ fi
 
 function show_menu() {
     clear
-    echo -e "🖤 🤍 🖤 🤍 🖤 🤍 🖤 🤍 🖤 🤍 🖤"
-    echo -e "       B L A C K  T E L B O T       "
-    echo -e "🖤 🤍 🖤 🤍 🖤 🤍 🖤 🤍 🖤 🤍 🖤"
-    echo "1. 🚀 Install Bot (Standard - 50MB Limit - NO API Keys Needed)"
-    echo "2. 🚀 Install Bot (Heavy - 2GB Limit - Needs API Keys & Docker)"
-    echo "3. 🛑 Stop Bot"
-    echo "4. 🔄 Restart Bot"
-    echo "5. 🗑️ Delete Everything"
-    echo "6. 📥 Update Source Code"
-    echo "7. ❌ Exit"
-    echo -e "------------------------------------"
-    read -p "Select an option [1-7]: " choice
+    echo "===================================="
+    echo "         BLACK TELBOT MANAGER       "
+    echo "===================================="
+    echo "1. Install Bot (Standard Mode - 50MB Limit)"
+    echo "2. Install Bot (Heavy Mode - 2GB Limit + Docker)"
+    echo "3. Add/Update Cookies (Fix Instagram & YouTube)"
+    echo "4. Stop Bot"
+    echo "5. Restart Bot"
+    echo "6. Delete Everything (Complete Wipe)"
+    echo "7. Update Source Code"
+    echo "8. Exit"
+    echo "------------------------------------"
+    read -p "Select an option [1-8]: " choice
     handle_choice $choice
 }
 
@@ -30,18 +31,19 @@ function handle_choice() {
     case $1 in
         1) install_standard ;;
         2) install_heavy ;;
-        3) sudo systemctl stop $SERVICE_NAME ; echo "Stopped." ; sleep 2 ; show_menu ;;
-        4) sudo systemctl restart $SERVICE_NAME ; echo "Restarted." ; sleep 2 ; show_menu ;;
-        5) delete_all ;;
-        6) update_code ;;
-        7) exit 0 ;;
+        3) setup_cookies ;;
+        4) sudo systemctl stop $SERVICE_NAME ; echo "Stopped." ; sleep 2 ; show_menu ;;
+        5) sudo systemctl restart $SERVICE_NAME ; echo "Restarted." ; sleep 2 ; show_menu ;;
+        6) delete_all ;;
+        7) update_code ;;
+        8) exit 0 ;;
         *) show_menu ;;
     esac
 }
 
 function prepare_system() {
-    echo -e "\n--- 📦 Installing System Dependencies ---"
-    sudo apt update && sudo apt install -y python3 python3-pip python3-venv ffmpeg wget curl
+    echo -e "\n--- Installing Dependencies ---"
+    sudo apt update && sudo apt install -y python3 python3-pip python3-venv ffmpeg wget curl nano
     
     mkdir -p $BOT_DIR/downloads
     mkdir -p $BOT_DIR/creds
@@ -72,23 +74,19 @@ EOF
     sudo systemctl daemon-reload
     sudo systemctl enable $SERVICE_NAME
     sudo systemctl start $SERVICE_NAME
-    echo "✅ INSTALLATION FINISHED! Type 'black-telbot' anywhere to open the menu."
+    echo "INSTALLATION FINISHED! Type 'black-telbot' anywhere to open the menu."
     sleep 3
     show_menu
 }
 
 function install_standard() {
-    echo -e "\n--- 🛠️ Setup (Standard Mode) ---"
     read -p "Enter Telegram Bot Token: " USER_TOKEN
-    
     prepare_system
     sed -i "s/YOUR_BOT_TOKEN_HERE/$USER_TOKEN/g" main_bot.py
-    
     create_service
 }
 
 function install_heavy() {
-    echo -e "\n--- 🛠️ Setup (Heavy Mode - 2GB) ---"
     read -p "Enter Telegram Bot Token: " USER_TOKEN
     read -p "Enter Telegram API ID: " USER_API_ID
     read -p "Enter Telegram API Hash: " USER_API_HASH
@@ -99,17 +97,41 @@ function install_heavy() {
     prepare_system
     sed -i "s/YOUR_BOT_TOKEN_HERE/$USER_TOKEN/g" main_bot.py
     sed -i "s/USE_LOCAL_API = False/USE_LOCAL_API = True/g" main_bot.py
-    
     create_service
 }
 
+function setup_cookies() {
+    echo -e "\n--- Cookie Setup ---"
+    echo "An editor will open now."
+    echo "1. Paste the content of your cookies.txt file."
+    echo "2. Press Ctrl+O then Enter (to save)."
+    echo "3. Press Ctrl+X (to exit)."
+    sleep 4
+    
+    mkdir -p $BOT_DIR
+    nano $BOT_DIR/cookies.txt
+    
+    sudo systemctl restart $SERVICE_NAME
+    echo "Cookies saved and Bot restarted!"
+    sleep 2
+    show_menu
+}
+
 function delete_all() {
-    sudo systemctl stop $SERVICE_NAME
+    echo "Removing everything from the system..."
+    sudo systemctl stop $SERVICE_NAME 2>/dev/null
+    sudo systemctl disable $SERVICE_NAME 2>/dev/null
+    sudo rm -f /etc/systemd/system/$SERVICE_NAME
+    sudo systemctl daemon-reload
+    
     sudo docker stop telegram-bot-api 2>/dev/null
     sudo docker rm telegram-bot-api 2>/dev/null
-    sudo rm /etc/systemd/system/$SERVICE_NAME
+    
     sudo rm -rf $BOT_DIR
-    echo "Everything deleted." ; sleep 2 ; show_menu
+    sudo rm -f /usr/local/bin/black-telbot
+    
+    echo "Complete Wipe Successful."
+    exit 0
 }
 
 function update_code() {
