@@ -23,7 +23,7 @@ function show_menu() {
     echo "7. Update Source Code"
     echo "8. Exit"
     echo "------------------------------------"
-    read -p "Select an option [1-8]: " choice
+    read -e -p "Select an option [1-8]: " choice
     handle_choice $choice
 }
 
@@ -80,16 +80,16 @@ EOF
 }
 
 function install_standard() {
-    read -p "Enter Telegram Bot Token: " USER_TOKEN
+    read -e -p "Enter Telegram Bot Token: " USER_TOKEN
     prepare_system
     sed -i "s/YOUR_BOT_TOKEN_HERE/$USER_TOKEN/g" main_bot.py
     create_service
 }
 
 function install_heavy() {
-    read -p "Enter Telegram Bot Token: " USER_TOKEN
-    read -p "Enter Telegram API ID: " USER_API_ID
-    read -p "Enter Telegram API Hash: " USER_API_HASH
+    read -e -p "Enter Telegram Bot Token: " USER_TOKEN
+    read -e -p "Enter Telegram API ID: " USER_API_ID
+    read -e -p "Enter Telegram API Hash: " USER_API_HASH
 
     sudo apt install -y docker.io docker-compose
     sudo docker run -d -p 8081:8081 --name telegram-bot-api --restart=always -e TELEGRAM_API_ID=$USER_API_ID -e TELEGRAM_API_HASH=$USER_API_HASH aiogram/telegram-bot-api:latest
