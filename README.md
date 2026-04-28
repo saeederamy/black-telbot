@@ -46,7 +46,7 @@ To run a Local API Server (which allows the 2GB limit), you need developer API k
 Connect to your Ubuntu server (SSH) and run the following commands to install everything automatically:
 
 ```bash
-wget [https://raw.githubusercontent.com/saeederamy/black-telbot/main/setup.sh]
+wget https://raw.githubusercontent.com/saeederamy/black-telbot/main/setup.sh
 chmod +x setup.sh
 ./setup.sh
 ```
