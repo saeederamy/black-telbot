@@ -271,58 +271,107 @@ action_drive_disable() {
 action_yt_po_token() {
     banner
     echo -e "${BOLD}  ── YouTube PO Token Setup ──${R}\n"
-    echo -e "  Generates a visitor token from a real browser fingerprint."
-    echo -e "  No Google account needed.\n"
-    echo -e "  Requirements: Node.js >= 18\n"
+    echo -e "  Generates a Proof-of-Origin token from a real browser fingerprint."
+    echo -e "  No Google account needed. Expires every ~24-48h.\n"
 
     if [[ ! -f "$BOT_DIR/main_bot.py" ]]; then
         err "Bot is not installed yet."; press_enter; show_menu; return
     fi
 
-    # Install Node.js if missing
+    # ── Node.js ────────────────────────────────────────────────
     if ! command -v node &>/dev/null; then
-        info "Installing Node.js..."
+        info "Installing Node.js 20..."
+        sudo apt-get install -y -qq curl
         curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - &>/dev/null
         sudo apt-get install -y -qq nodejs
     fi
     ok "Node.js $(node -v)"
 
-    # Install bgutil pot provider
+    # ── bgutil-ytdlp-pot-provider ──────────────────────────────
+    # Uses wget instead of git clone — works on filtered servers.
     BGUTIL_DIR="$BOT_DIR/bgutil-pot"
-    if [[ ! -d "$BGUTIL_DIR" ]]; then
-        info "Installing bgutil-ytdlp-pot-provider..."
-        git clone -q https://github.com/nicholasstephan/bgutil-ytdlp-pot-provider.git "$BGUTIL_DIR" 2>/dev/null             || { err "git clone failed. Make sure git is installed (apt install git)."; press_enter; show_menu; return; }
-        cd "$BGUTIL_DIR" && npm install --silent
+    mkdir -p "$BGUTIL_DIR"
+
+    local BASE_RAW="https://raw.githubusercontent.com/nicholasstephan/bgutil-ytdlp-pot-provider/main"
+
+    info "Downloading bgutil files via wget..."
+    for file in package.json index.js generate.js getPoToken.js; do
+        wget -q -O "$BGUTIL_DIR/$file" "$BASE_RAW/$file" 2>/dev/null
+        # Remove empty/404 files
+        [[ -s "$BGUTIL_DIR/$file" ]] && ok "  $file" || rm -f "$BGUTIL_DIR/$file"
+    done
+
+    if [[ ! -f "$BGUTIL_DIR/package.json" ]]; then
+        err "Could not download package.json."
+        info "GitHub raw.githubusercontent.com may be filtered on this server."
+        info "Alternative: use option [6] to set up cookies instead."
+        press_enter; show_menu; return
     fi
 
-    info "Generating PO Token (this takes ~10 seconds)..."
-    cd "$BGUTIL_DIR"
+    info "Installing npm dependencies..."
+    cd "$BGUTIL_DIR" && npm install --silent 2>/dev/null
+    ok "npm install done."
 
-    # Run the generator and capture visitor_data + po_token
-    local output
-    output=$(node getPoToken.js 2>&1) || {
-        err "PO Token generation failed:\n$output"
+    # ── Find the entry-point script ────────────────────────────
+    local entry_script=""
+    for candidate in getPoToken.js generate.js index.js; do
+        [[ -f "$BGUTIL_DIR/$candidate" ]] && { entry_script="$BGUTIL_DIR/$candidate"; break; }
+    done
+
+    if [[ -z "$entry_script" ]]; then
+        err "No entry script found. Downloaded files: $(ls "$BGUTIL_DIR" 2>/dev/null)"
         press_enter; show_menu; return
-    }
+    fi
+    info "Using: $entry_script"
 
-    # Parse output — expected lines: "visitorData: <val>" and "poToken: <val>"
+    # ── Generate token ─────────────────────────────────────────
+    info "Generating PO Token (~10 seconds)..."
+    cd "$BGUTIL_DIR"
+    local output
+    output=$(node "$entry_script" 2>&1)
+    local exit_code=$?
+
+    if [[ $exit_code -ne 0 ]]; then
+        err "Generation failed (exit $exit_code):"
+        echo "$output" | tail -20
+        press_enter; show_menu; return
+    fi
+
+    # ── Parse output ───────────────────────────────────────────
+    # Supports both JSON output and "key: value" line format
     local visitor_data po_token
-    visitor_data=$(echo "$output" | grep -i "visitor" | grep -oP '(?<=: )\S+' | head -1)
-    po_token=$(echo    "$output" | grep -i "poToken\|po_token" | grep -oP '(?<=: )\S+' | head -1)
+
+    # Try JSON first: {"visitorData":"...","poToken":"..."}
+    if echo "$output" | grep -q '{'; then
+        visitor_data=$(echo "$output" | grep -oP '"visitorData"\s*:\s*"\K[^"]+' | head -1)
+        po_token=$(    echo "$output" | grep -oP '"poToken"\s*:\s*"\K[^"]+' | head -1)
+    fi
+
+    # Fall back to "key: value" lines
+    if [[ -z "$visitor_data" ]]; then
+        visitor_data=$(echo "$output" | grep -i "visitor" | grep -oP '(?<=:\s)\S+' | head -1)
+    fi
+    if [[ -z "$po_token" ]]; then
+        po_token=$(echo "$output" | grep -i "potoken\|po_token" | grep -oP '(?<=:\s)\S+' | head -1)
+    fi
 
     if [[ -z "$visitor_data" || -z "$po_token" ]]; then
-        err "Could not parse token output:\n$output"
+        err "Could not parse token from output:"
+        echo "$output" | tail -20
+        info "Try option [6] (cookies) as an alternative."
         press_enter; show_menu; return
     fi
 
-    # Write to po_token.txt (two lines: visitor_data, po_token)
+    # ── Save ───────────────────────────────────────────────────
     printf "%s\n%s\n" "$visitor_data" "$po_token" > "$BOT_DIR/po_token.txt"
-    ok "PO Token saved to $BOT_DIR/po_token.txt"
+    ok "Saved to $BOT_DIR/po_token.txt"
+    info "  visitor_data : ${visitor_data:0:40}..."
+    info "  po_token     : ${po_token:0:40}..."
 
     sudo systemctl restart "$SERVICE" 2>/dev/null || true
     sleep 1
-    ok "Bot restarted — YouTube downloads should work now."
-    info "Tokens expire in ~24-48h. Re-run this option to refresh."
+    ok "Bot restarted — YouTube should work now."
+    info "Re-run this option every 24-48h to refresh the token."
     press_enter; show_menu
 }
 
