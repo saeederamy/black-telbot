@@ -1,11 +1,11 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ╔══════════════════════════════════════════════════════════════╗
 # ║           BLACK TELBOT — setup.sh                          ║
 # ║      develop by Saeed Eramy                                ║
 # ║      https://github.com/saeederamy                         ║
 # ╚══════════════════════════════════════════════════════════════╝
 
-set -euo pipefail
+set -uo pipefail
 
 # ──────────────────────────────────────────────────────────────
 # CONSTANTS
@@ -15,124 +15,146 @@ SERVICE="blacktelbot.service"
 VENV="$BOT_DIR/venv"
 PYTHON="$VENV/bin/python3"
 PIP="$VENV/bin/pip"
-RAW_URL="https://raw.githubusercontent.com/saeederamy/black-telbot/main/main_bot.py"
+GITHUB_BASE="https://raw.githubusercontent.com/saeederamy/black-telbot/main"
+SETUP_URL="$GITHUB_BASE/setup.sh"
+BOT_URL="$GITHUB_BASE/main_bot.py"
 SELF_PATH="/usr/local/bin/black-telbot"
 
-# ── Colors ──────────────────────────────────────────────────
-C_BLACK='\033[0;30m'
-C_WHITE='\033[1;37m'
-C_GRAY='\033[0;37m'
-C_RED='\033[0;31m'
-C_GREEN='\033[0;32m'
-C_YELLOW='\033[1;33m'
-C_RESET='\033[0m'
-C_BOLD='\033[1m'
+# ──────────────────────────────────────────────────────────────
+# COLORS
+# ──────────────────────────────────────────────────────────────
+R='\033[0m'
+BOLD='\033[1m'
+WHITE='\033[1;37m'
+GRAY='\033[0;37m'
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
 
 # ──────────────────────────────────────────────────────────────
-# SELF-INSTALL  (run once — copies itself to /usr/local/bin)
+# SELF-INSTALL
 # ──────────────────────────────────────────────────────────────
-if [[ "$(realpath "$0")" != "$SELF_PATH" ]]; then
-    echo -e "${C_YELLOW}Installing 'black-telbot' command…${C_RESET}"
-    sudo cp "$(realpath "$0")" "$SELF_PATH"
-    sudo chmod +x "$SELF_PATH"
-    echo -e "${C_GREEN}Done. You can now run 'black-telbot' from anywhere.${C_RESET}"
-fi
+_register_command() {
+    [[ -x "$SELF_PATH" ]] && return 0
+    echo -e "${YELLOW}Registering 'black-telbot' command…${R}"
+    if [[ ! -f "$0" || "$0" == "bash" || "$0" == "-bash" ]]; then
+        wget -q -O "$SELF_PATH" "$SETUP_URL" && chmod +x "$SELF_PATH" \
+            && echo -e "${GREEN}✓ 'black-telbot' command installed.${R}" \
+            || echo -e "${YELLOW}⚠ Could not install command — that's okay.${R}"
+    else
+        cp "$(realpath "$0")" "$SELF_PATH" && chmod +x "$SELF_PATH" \
+            && echo -e "${GREEN}✓ 'black-telbot' command installed.${R}"
+    fi
+}
+_register_command
 
 # ──────────────────────────────────────────────────────────────
 # HELPERS
 # ──────────────────────────────────────────────────────────────
 banner() {
     clear
-    echo -e "${C_BOLD}${C_WHITE}"
+    echo -e "${BOLD}${WHITE}"
     echo "  ██████╗ ██╗      █████╗  ██████╗██╗  ██╗"
     echo "  ██╔══██╗██║     ██╔══██╗██╔════╝██║ ██╔╝"
     echo "  ██████╔╝██║     ███████║██║     █████╔╝ "
     echo "  ██╔══██╗██║     ██╔══██║██║     ██╔═██╗ "
     echo "  ██████╔╝███████╗██║  ██║╚██████╗██║  ██╗"
     echo "  ╚═════╝ ╚══════╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝"
-    echo -e "${C_GRAY}       T E L B O T   M A N A G E R"
-    echo -e "       develop by Saeed Eramy${C_RESET}"
+    echo -e "${GRAY}       T E L B O T   M A N A G E R"
+    echo -e "       develop by Saeed Eramy${R}"
     echo
 }
 
 status_line() {
-    local svc_status="●"
-    local svc_color="$C_RED"
+    local label color
     if systemctl is-active --quiet "$SERVICE" 2>/dev/null; then
-        svc_status="● running"
-        svc_color="$C_GREEN"
+        label="● running"; color="$GREEN"
     elif systemctl is-enabled --quiet "$SERVICE" 2>/dev/null; then
-        svc_status="○ stopped"
-        svc_color="$C_YELLOW"
+        label="○ stopped"; color="$YELLOW"
     else
-        svc_status="✗ not installed"
+        label="✗ not installed"; color="$RED"
     fi
-    echo -e "  Service: ${svc_color}${svc_status}${C_RESET}"
+
+    # Drive status
+    local drive_label drive_color
+    if grep -q "DRIVE_FOLDER_DISABLED" "$BOT_DIR/main_bot.py" 2>/dev/null; then
+        drive_label="✗ not configured"; drive_color="$GRAY"
+    else
+        drive_label="✓ active"; drive_color="$GREEN"
+    fi
+
+    echo -e "  Service:      ${color}${label}${R}"
+    echo -e "  Google Drive: ${drive_color}${drive_label}${R}"
     echo
 }
 
-die() { echo -e "\n${C_RED}Error: $*${C_RESET}\n" >&2; exit 1; }
-ok()  { echo -e "${C_GREEN}✓ $*${C_RESET}"; }
-info(){ echo -e "${C_GRAY}  $*${C_RESET}"; }
+ok()   { echo -e "${GREEN}  ✓ $*${R}"; }
+warn() { echo -e "${YELLOW}  ⚠ $*${R}"; }
+err()  { echo -e "${RED}  ✗ $*${R}"; }
+info() { echo -e "${GRAY}  $*${R}"; }
+section() { echo -e "\n${BOLD}${CYAN}── $* ──${R}"; }
 
 ask() {
-    # ask <var_name> <prompt> [default]
-    local var="$1" prompt="$2" default="${3:-}"
-    local val
-    if [[ -n "$default" ]]; then
-        read -rp "  $prompt [$default]: " val
-        val="${val:-$default}"
-    else
-        while true; do
-            read -rp "  $prompt: " val
-            [[ -n "$val" ]] && break
-            echo -e "  ${C_RED}This field is required.${C_RESET}"
-        done
-    fi
-    printf -v "$var" '%s' "$val"
+    local _var="$1" _prompt="$2" _default="${3:-}" _val
+    while true; do
+        if [[ -n "$_default" ]]; then
+            read -rp "  $_prompt [$_default]: " _val
+            _val="${_val:-$_default}"
+        else
+            read -rp "  $_prompt: " _val
+        fi
+        [[ -n "$_val" ]] && break
+        echo -e "  ${RED}Required.${R}"
+    done
+    printf -v "$_var" '%s' "$_val"
 }
 
-press_enter() { echo; read -rp "  Press Enter to continue…" _; }
+ask_yn() {
+    # ask_yn "Question" → returns 0 for yes, 1 for no
+    local _ans
+    read -rp "  $1 [y/N]: " _ans
+    [[ "${_ans,,}" == "y" ]]
+}
+
+press_enter() { echo; read -rp "  Press Enter to continue…" _ || true; }
+
+patch() { sed -i "s|$2|$3|g" "$1"; }
 
 # ──────────────────────────────────────────────────────────────
-# SYSTEM PREP  (shared between standard and heavy install)
+# INSTALL STEPS
 # ──────────────────────────────────────────────────────────────
-prepare_system() {
-    echo -e "\n${C_BOLD}Installing system packages…${C_RESET}"
+install_packages() {
+    section "System packages"
     sudo apt-get update -qq
     sudo apt-get install -y -qq python3 python3-pip python3-venv ffmpeg wget curl nano
+    ok "Done."
+}
 
-    echo -e "\n${C_BOLD}Creating bot directories…${C_RESET}"
+setup_venv() {
+    section "Python environment"
     mkdir -p "$BOT_DIR/downloads" "$BOT_DIR/creds"
-
-    echo -e "\n${C_BOLD}Setting up Python virtual environment…${C_RESET}"
     python3 -m venv "$VENV"
     "$PIP" install -q --upgrade pip
     "$PIP" install -q \
         "python-telegram-bot>=20.0" \
         yt-dlp \
+        spotdl \
         google-api-python-client \
         google-auth-httplib2 \
         google-auth-oauthlib
+    ok "Done."
+}
 
-    echo -e "\n${C_BOLD}Downloading latest bot code…${C_RESET}"
-    wget -q -O "$BOT_DIR/main_bot.py" "$RAW_URL" \
-        || die "Could not download main_bot.py — check your internet connection."
+download_bot() {
+    section "Bot code"
+    wget -q -O "$BOT_DIR/main_bot.py" "$BOT_URL" \
+        || { err "Download failed — check internet."; return 1; }
     ok "main_bot.py downloaded."
 }
 
-patch_token() {
-    local token="$1"
-    sed -i "s|YOUR_BOT_TOKEN_HERE|$token|g" "$BOT_DIR/main_bot.py"
-}
-
-patch_folder_id() {
-    local folder_id="$1"
-    sed -i "s|YOUR_SHARED_FOLDER_ID_HERE|$folder_id|g" "$BOT_DIR/main_bot.py"
-}
-
 create_service() {
-    echo -e "\n${C_BOLD}Creating systemd service…${C_RESET}"
+    section "Systemd service"
     sudo tee "/etc/systemd/system/$SERVICE" > /dev/null <<EOF
 [Unit]
 Description=Black Telbot — develop by Saeed Eramy
@@ -153,61 +175,126 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
     sudo systemctl daemon-reload
-    sudo systemctl enable "$SERVICE"
+    sudo systemctl enable "$SERVICE" --quiet
     sudo systemctl restart "$SERVICE"
     sleep 2
 
     if systemctl is-active --quiet "$SERVICE"; then
         ok "Service is running!"
     else
-        echo -e "${C_RED}Service failed to start. Check logs:${C_RESET}"
-        sudo journalctl -u "$SERVICE" -n 20 --no-pager
+        warn "Service did not start. Check logs with option [4]."
+        sudo journalctl -u "$SERVICE" -n 15 --no-pager || true
     fi
 }
 
 # ──────────────────────────────────────────────────────────────
-# MENU ACTIONS
+# DRIVE SETUP  (completely optional — separate menu action)
+# ──────────────────────────────────────────────────────────────
+action_drive_setup() {
+    banner
+    echo -e "${BOLD}  ── Google Drive Setup ──${R}\n"
+    echo -e "  این مرحله ${BOLD}اختیاریه${R}. اگه Drive نمی‌خوای فقط برگرد.\n"
+    echo -e "  چی لازم داری:"
+    echo -e "  ${CYAN}1.${R} یه Google Cloud Project با Drive API فعال"
+    echo -e "  ${CYAN}2.${R} یه Service Account با فایل JSON"
+    echo -e "  ${CYAN}3.${R} یه پوشه در Drive که با Service Account share شده (Editor)\n"
+    echo -e "  مراحل:"
+    echo -e "  ${GRAY}→ console.cloud.google.com → APIs → Drive API → Enable${R}"
+    echo -e "  ${GRAY}→ Credentials → Service Account → Keys → JSON${R}"
+    echo -e "  ${GRAY}→ پوشه Drive → Share → ایمیل Service Account → Editor${R}"
+    echo -e "  ${GRAY}→ ID پوشه = آخرین قسمت URL پوشه${R}\n"
+
+    if ! ask_yn "می‌خوای Drive رو الان راه‌اندازی کنی?"; then
+        show_menu; return
+    fi
+
+    if [[ ! -f "$BOT_DIR/main_bot.py" ]]; then
+        err "ربات هنوز نصب نشده. اول نصب کن."
+        press_enter; show_menu; return
+    fi
+
+    ask FOLDER_ID "Google Drive Folder ID"
+
+    patch "$BOT_DIR/main_bot.py" "DRIVE_FOLDER_DISABLED" "$FOLDER_ID"
+    ok "Folder ID ذخیره شد."
+
+    sudo systemctl restart "$SERVICE" 2>/dev/null || true
+    sleep 1
+    ok "ربات ریستارت شد — گزینه Drive الان توی منوی ربات ظاهر میشه."
+    press_enter; show_menu
+}
+
+action_drive_disable() {
+    banner
+    echo -e "${BOLD}  ── غیرفعال کردن Drive ──${R}\n"
+
+    if [[ ! -f "$BOT_DIR/main_bot.py" ]]; then
+        warn "ربات نصب نیست."; press_enter; show_menu; return
+    fi
+
+    if grep -q "DRIVE_FOLDER_DISABLED" "$BOT_DIR/main_bot.py" 2>/dev/null; then
+        warn "Drive از قبل غیرفعاله."
+        press_enter; show_menu; return
+    fi
+
+    if ! ask_yn "مطمئنی می‌خوای Drive رو غیرفعال کنی?"; then
+        show_menu; return
+    fi
+
+    # Replace current folder ID back to disabled marker
+    local current_id
+    current_id=$(grep -oP 'DEFAULT_DRIVE_FOLDER_ID\s*=\s*"\K[^"]+' "$BOT_DIR/main_bot.py" 2>/dev/null || echo "")
+    [[ -n "$current_id" ]] && patch "$BOT_DIR/main_bot.py" "$current_id" "DRIVE_FOLDER_DISABLED"
+
+    sudo systemctl restart "$SERVICE" 2>/dev/null || true
+    sleep 1
+    ok "Drive غیرفعال شد — گزینه‌اش از منوی ربات حذف میشه."
+    press_enter; show_menu
+}
+
+# ──────────────────────────────────────────────────────────────
+# INSTALL ACTIONS
 # ──────────────────────────────────────────────────────────────
 action_install_standard() {
     banner
-    echo -e "${C_BOLD}  ── Standard Install (50 MB file limit) ──${C_RESET}\n"
-    echo -e "  You need:"
-    echo -e "  • A Telegram Bot Token  (from @BotFather)"
-    echo -e "  • Your Google Drive shared folder ID\n"
+    echo -e "${BOLD}  ── نصب استاندارد (50 MB) ──${R}\n"
+    echo -e "  فقط Bot Token لازمه:"
+    echo -e "  ${GRAY}→ @BotFather → /newbot → copy token${R}\n"
 
-    ask BOT_TOKEN     "Bot Token"
-    ask FOLDER_ID     "Drive Folder ID (from the folder's URL)"
+    ask BOT_TOKEN "Bot Token"
 
-    prepare_system
-    patch_token    "$BOT_TOKEN"
-    patch_folder_id "$FOLDER_ID"
+    install_packages
+    setup_venv
+    download_bot
+    patch "$BOT_DIR/main_bot.py" "YOUR_BOT_TOKEN_HERE" "$BOT_TOKEN"
     create_service
 
     echo
-    ok "Installation complete!"
-    info "Run 'black-telbot' anytime to open this menu."
+    ok "نصب کامل شد! ربات در حال اجراست."
+    echo
+    if ask_yn "می‌خوای Google Drive رو هم الان راه‌اندازی کنی?"; then
+        action_drive_setup; return
+    fi
+    info "بعداً می‌تونی از گزینه [5] Drive رو راه‌اندازی کنی."
     press_enter; show_menu
 }
 
 action_install_heavy() {
     banner
-    echo -e "${C_BOLD}  ── Heavy Install (2 GB file limit via Docker) ──${C_RESET}\n"
-    echo -e "  You need:"
-    echo -e "  • A Telegram Bot Token  (from @BotFather)"
-    echo -e "  • Telegram API ID       (from my.telegram.org)"
-    echo -e "  • Telegram API Hash     (from my.telegram.org)"
-    echo -e "  • Your Google Drive shared folder ID\n"
+    echo -e "${BOLD}  ── نصب Heavy (2 GB + Docker) ──${R}\n"
+    echo -e "  لازم داری:"
+    echo -e "  ${GRAY}→ Bot Token    : @BotFather${R}"
+    echo -e "  ${GRAY}→ API ID/Hash  : my.telegram.org${R}\n"
 
-    ask BOT_TOKEN  "Bot Token"
-    ask API_ID     "Telegram API ID"
-    ask API_HASH   "Telegram API Hash"
-    ask FOLDER_ID  "Drive Folder ID"
+    ask BOT_TOKEN "Bot Token"
+    ask API_ID    "Telegram API ID"
+    ask API_HASH  "Telegram API Hash"
 
-    echo -e "\n${C_BOLD}Installing Docker…${C_RESET}"
+    install_packages
+
+    section "Docker"
     sudo apt-get install -y -qq docker.io
-    sudo systemctl enable --now docker
-
-    echo -e "\n${C_BOLD}Starting Telegram Local API server…${C_RESET}"
+    sudo systemctl enable --now docker --quiet
     sudo docker rm -f telegram-bot-api 2>/dev/null || true
     sudo docker run -d \
         --name telegram-bot-api \
@@ -216,80 +303,73 @@ action_install_heavy() {
         -e TELEGRAM_API_ID="$API_ID" \
         -e TELEGRAM_API_HASH="$API_HASH" \
         aiogram/telegram-bot-api:latest
-    ok "Local API server started on port 8081."
+    ok "Local API server started on :8081."
 
-    prepare_system
-    patch_token "$BOT_TOKEN"
-    patch_folder_id "$FOLDER_ID"
-    sed -i "s|USE_LOCAL_API = False|USE_LOCAL_API = True|g" "$BOT_DIR/main_bot.py"
+    setup_venv
+    download_bot
+    patch "$BOT_DIR/main_bot.py" "YOUR_BOT_TOKEN_HERE"   "$BOT_TOKEN"
+    patch "$BOT_DIR/main_bot.py" "USE_LOCAL_API = False"  "USE_LOCAL_API = True"
     create_service
 
     echo
-    ok "Heavy installation complete! 2 GB file limit is active."
+    ok "نصب Heavy کامل شد — محدودیت 2GB فعاله."
+    echo
+    if ask_yn "می‌خوای Google Drive رو هم الان راه‌اندازی کنی?"; then
+        action_drive_setup; return
+    fi
+    info "بعداً می‌تونی از گزینه [5] Drive رو راه‌اندازی کنی."
     press_enter; show_menu
 }
 
 action_update() {
     banner
-    echo -e "${C_BOLD}  ── Update Bot Code ──${C_RESET}\n"
+    echo -e "${BOLD}  ── آپدیت ──${R}\n"
 
     if [[ ! -f "$BOT_DIR/main_bot.py" ]]; then
-        echo -e "${C_RED}Bot is not installed yet.${C_RESET}"
-        press_enter; show_menu; return
+        warn "ربات نصب نیست."; press_enter; show_menu; return
     fi
 
-    # Preserve token, folder ID, and local API setting
+    # Preserve settings
     local token folder_id local_api
-    token=$(grep -oP "(?<=BOT_TOKEN\s{5}= \")[^\"]*" "$BOT_DIR/main_bot.py" || true)
-    folder_id=$(grep -oP "(?<=DEFAULT_DRIVE_FOLDER_ID = \")[^\"]*" "$BOT_DIR/main_bot.py" || true)
-    local_api=$(grep -oP "(?<=USE_LOCAL_API = )(True|False)" "$BOT_DIR/main_bot.py" || echo "False")
+    token=$(grep -oP 'BOT_TOKEN\s*=\s*"\K[^"]+' "$BOT_DIR/main_bot.py" 2>/dev/null || echo "")
+    folder_id=$(grep -oP 'DEFAULT_DRIVE_FOLDER_ID\s*=\s*"\K[^"]+' "$BOT_DIR/main_bot.py" 2>/dev/null || echo "")
+    local_api=$(grep -oP 'USE_LOCAL_API\s*=\s*\K(True|False)' "$BOT_DIR/main_bot.py" 2>/dev/null || echo "False")
 
-    echo -e "  Downloading latest version…"
-    wget -q -O "$BOT_DIR/main_bot.py" "$RAW_URL" \
-        || die "Download failed."
+    info "Downloading latest bot code…"
+    wget -q -O "$BOT_DIR/main_bot.py" "$BOT_URL" \
+        || { err "Download failed."; press_enter; show_menu; return; }
 
-    [[ -n "$token"     ]] && patch_token "$token"
-    [[ -n "$folder_id" ]] && patch_folder_id "$folder_id"
+    [[ -n "$token"     ]] && patch "$BOT_DIR/main_bot.py" "YOUR_BOT_TOKEN_HERE"    "$token"
+    [[ -n "$folder_id" && "$folder_id" != "DRIVE_FOLDER_DISABLED" ]] && \
+        patch "$BOT_DIR/main_bot.py" "DRIVE_FOLDER_DISABLED" "$folder_id"
     [[ "$local_api" == "True" ]] && \
-        sed -i "s|USE_LOCAL_API = False|USE_LOCAL_API = True|g" "$BOT_DIR/main_bot.py"
+        patch "$BOT_DIR/main_bot.py" "USE_LOCAL_API = False" "USE_LOCAL_API = True"
 
-    # Also update yt-dlp to latest (most common reason downloads break)
-    echo -e "  Updating yt-dlp…"
-    "$PIP" install -q --upgrade yt-dlp
-    ok "yt-dlp updated."
+    info "Updating yt-dlp and spotdl…"
+    "$PIP" install -q --upgrade yt-dlp spotdl
+    ok "yt-dlp و spotdl آپدیت شدن."
 
     sudo systemctl restart "$SERVICE"
     sleep 1
-    ok "Bot updated and restarted."
+    ok "ربات آپدیت و ریستارت شد."
     press_enter; show_menu
 }
 
 action_logs() {
     banner
-    echo -e "${C_BOLD}  ── Live Logs (Ctrl+C to stop) ──${C_RESET}\n"
+    echo -e "${BOLD}  ── Live Logs  (Ctrl+C to stop) ──${R}\n"
     sudo journalctl -u "$SERVICE" -f --no-pager || true
     show_menu
 }
 
-action_stop() {
-    sudo systemctl stop "$SERVICE" && ok "Bot stopped." || true
-    press_enter; show_menu
-}
-
-action_restart() {
-    sudo systemctl restart "$SERVICE" && ok "Bot restarted." || true
-    press_enter; show_menu
-}
+action_stop()    { sudo systemctl stop    "$SERVICE" && ok "Stopped."    || warn "Not found."; press_enter; show_menu; }
+action_restart() { sudo systemctl restart "$SERVICE" && ok "Restarted." || warn "Not found."; press_enter; show_menu; }
 
 action_wipe() {
     banner
-    echo -e "${C_RED}${C_BOLD}  !! COMPLETE WIPE — this cannot be undone !!${C_RESET}\n"
-    echo -e "  This will remove:"
-    echo -e "  • The bot service and all files in $BOT_DIR"
-    echo -e "  • The Docker container (if running)"
-    echo -e "  • The 'black-telbot' command\n"
-    read -rp "  Type YES to confirm: " confirm
-    [[ "$confirm" != "YES" ]] && { echo "Aborted."; press_enter; show_menu; return; }
+    echo -e "${RED}${BOLD}  !! حذف کامل — برگشت‌پذیر نیست !!${R}\n"
+    read -rp "  برای تأیید YES بنویس: " confirm
+    [[ "$confirm" != "YES" ]] && { warn "لغو شد."; press_enter; show_menu; return; }
 
     sudo systemctl stop    "$SERVICE" 2>/dev/null || true
     sudo systemctl disable "$SERVICE" 2>/dev/null || true
@@ -299,7 +379,7 @@ action_wipe() {
     sudo docker rm    telegram-bot-api 2>/dev/null || true
     sudo rm -rf "$BOT_DIR"
     sudo rm -f  "$SELF_PATH"
-    ok "Complete wipe done."
+    ok "همه چیز پاک شد."
     exit 0
 }
 
@@ -309,27 +389,31 @@ action_wipe() {
 show_menu() {
     banner
     status_line
-    echo -e "  ${C_BOLD}[1]${C_RESET} Install — Standard   ${C_GRAY}(50 MB limit)${C_RESET}"
-    echo -e "  ${C_BOLD}[2]${C_RESET} Install — Heavy      ${C_GRAY}(2 GB limit + Docker)${C_RESET}"
-    echo -e "  ${C_BOLD}[3]${C_RESET} Update bot code      ${C_GRAY}(also updates yt-dlp)${C_RESET}"
-    echo -e "  ${C_BOLD}[4]${C_RESET} View live logs"
-    echo -e "  ${C_BOLD}[5]${C_RESET} Stop bot"
-    echo -e "  ${C_BOLD}[6]${C_RESET} Restart bot"
-    echo -e "  ${C_BOLD}[7]${C_RESET} Complete wipe        ${C_RED}(danger)${C_RESET}"
-    echo -e "  ${C_BOLD}[8]${C_RESET} Exit"
+    echo -e "  ${BOLD}[1]${R} نصب استاندارد     ${GRAY}50MB limit${R}"
+    echo -e "  ${BOLD}[2]${R} نصب Heavy          ${GRAY}2GB + Docker${R}"
+    echo -e "  ${BOLD}[3]${R} آپدیت              ${GRAY}کد + yt-dlp + spotdl${R}"
+    echo -e "  ${BOLD}[4]${R} لاگ‌های زنده"
+    echo -e "  ${BOLD}[5]${R} راه‌اندازی Drive   ${CYAN}اختیاری${R}"
+    echo -e "  ${BOLD}[6]${R} غیرفعال کردن Drive"
+    echo -e "  ${BOLD}[7]${R} متوقف کردن ربات"
+    echo -e "  ${BOLD}[8]${R} ریستارت"
+    echo -e "  ${BOLD}[9]${R} حذف کامل           ${RED}خطرناک${R}"
+    echo -e "  ${BOLD}[0]${R} خروج"
     echo
-    read -rp "  Select [1-8]: " choice
+    read -rp "  انتخاب [0-9]: " choice
     echo
 
-    case "$choice" in
+    case "${choice:-}" in
         1) action_install_standard ;;
         2) action_install_heavy    ;;
         3) action_update           ;;
         4) action_logs             ;;
-        5) action_stop             ;;
-        6) action_restart          ;;
-        7) action_wipe             ;;
-        8) exit 0                  ;;
+        5) action_drive_setup      ;;
+        6) action_drive_disable    ;;
+        7) action_stop             ;;
+        8) action_restart          ;;
+        9) action_wipe             ;;
+        0) exit 0                  ;;
         *) show_menu               ;;
     esac
 }
