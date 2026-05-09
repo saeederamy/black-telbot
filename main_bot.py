@@ -68,6 +68,7 @@ BTN_UL    = "☁️  Upload to Drive"
 BTN_SETUP = "🔑  Drive Setup"
 BTN_ABOUT = "🖤  About"
 
+
 def build_menu() -> ReplyKeyboardMarkup:
     rows = [[BTN_DL]]
     if DRIVE_ENABLED:
@@ -188,7 +189,7 @@ def _ydl_download_sync(url: str, quality: str) -> str:
 
     The key insight for YouTube "private video" errors on public content:
     Some player clients (android, mweb alone) trigger a different auth
-    path that can mislabel public videos as private.  Using `web` as the
+    path that can mislabel public videos as private. Using `web` as the
     first client avoids this, with mweb + tv_embedded + ios as fallbacks.
     """
     is_instagram = "instagram.com" in url.lower()
@@ -256,7 +257,7 @@ def _upload_sync(file_path: str, user_id: int) -> str | None:
         while resp is None:
             status, resp = req.next_chunk()
             if status:
-                logger.info("Drive: %.0f%%", status.progress() * 100)
+                logger.info("Drive upload: %.0f%%", status.progress() * 100)
         return resp.get("webViewLink")
     except HttpError as e:
         if "storageQuotaExceeded" in str(e):
@@ -278,30 +279,30 @@ async def upload_to_drive(file_path: str, user_id: int) -> str | None:
 WELCOME = (
     "🖤 *BLACK TELBOT* 🤍\n"
     "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    "سلام\\! من *Black Telbot* هستم،\n"
-    "ربات دانلود و آپلود رسانه\\.\n\n"
-    "🎬 *دانلود از:*\n"
-    "  ▸ YouTube \\| Instagram\n"
-    "  ▸ Twitter \\| Spotify\n"
-    "  ▸ \\+1000 سایت دیگه\n\n"
-    "📥 کیفیت: *۳۶۰p تا ۱۰۸۰p* و *MP3*\n\n"
+    "*Media Downloader & Drive Uploader*\n\n"
+    "🎬 *Download from:*\n"
+    "  ▸ YouTube  \\|  Instagram\n"
+    "  ▸ Twitter  \\|  Spotify\n"
+    "  ▸ \\+1000 other sites\n\n"
+    "📥 Quality: *360p to 1080p* and *MP3*\n\n"
     "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    "👨‍💻 *توسعه‌دهنده:* [Saeed Eramy](https://github.com/saeederamy)\n"
+    "👨‍💻 *develop by* [Saeed Eramy](https://github.com/saeederamy)\n"
     "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    "یه گزینه انتخاب کن 👇"
+    "Choose an option 👇"
 )
 
 ABOUT_TEXT = (
     "🖤 *BLACK TELBOT* 🤍\n"
     "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    "ربات پیشرفته دانلود رسانه\n\n"
-    "✦ YouTube، Instagram، Twitter\n"
-    "✦ Spotify \\(بدون DRM\\)\n"
-    "✦ کیفیت ۳۶۰p تا ۱۰۸۰p و MP3\n"
-    "✦ آپلود تا ۲GB به Google Drive\n\n"
+    "Advanced media downloader & Google Drive uploader bot\\.\n\n"
+    "✦ YouTube, Instagram, Twitter\n"
+    "✦ Spotify \\(DRM\\-free via spotdl\\)\n"
+    "✦ Quality: 360p → 1080p and MP3\n"
+    "✦ Upload up to 2GB to personal Google Drive\n"
+    "✦ Multi\\-user with isolated credentials\n\n"
     "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    "👨‍💻 [Saeed Eramy](https://github.com/saeederamy) — "
-    "[black\\-telbot](https://github.com/saeederamy/black-telbot)\n\n"
+    "👨‍💻 *develop by* [Saeed Eramy](https://github.com/saeederamy)\n"
+    "📦 [black\\-telbot](https://github.com/saeederamy/black-telbot)\n\n"
     "🪙 *LTC:*\n"
     "`ltc1qxhuvs6j0suvv50nqjsuujqlr3u4ekfmys2ydps`"
 )
@@ -310,7 +311,7 @@ ABOUT_TEXT = (
 def quality_keyboard(is_spotify: bool = False) -> InlineKeyboardMarkup:
     if is_spotify:
         return InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎵  دانلود MP3", callback_data="q_mp3")]
+            [InlineKeyboardButton("🎵  Download MP3", callback_data="q_mp3")]
         ])
     return InlineKeyboardMarkup([
         [
@@ -358,31 +359,34 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         elif text == BTN_DL:
             user_states[uid] = "WAIT_URL"
             await update.message.reply_text(
-                "🔗 *لینک رو بفرست:*\n\nYouTube · Instagram · Twitter · Spotify · \\.\\.\\.",
+                "🔗 *Send the link:*\n\nYouTube \\| Instagram \\| Twitter \\| Spotify \\| \\.\\.\\.",
                 parse_mode="MarkdownV2",
             )
 
         elif text == BTN_UL:
             if not DRIVE_ENABLED:
-                await update.message.reply_text("⚠️ Drive پیکربندی نشده.")
+                await update.message.reply_text("⚠️ Drive is not configured on this bot.")
                 return
             if not os.path.exists(os.path.join(CREDS_DIR, f"{uid}.json")):
                 await update.message.reply_text(
-                    "⚠️ هنوز credentials تنظیم نشده\\.\n"
-                    "از دکمه 🔑 *Drive Setup* استفاده کن\\.",
+                    "⚠️ No credentials found\\.\n"
+                    "Use 🔑 *Drive Setup* first to upload your `credentials\\.json`\\.",
                     parse_mode="MarkdownV2",
                 )
             else:
                 user_states[uid] = "WAIT_FILE"
-                await update.message.reply_text("📁 فایل رو بفرست \\(تا ۲ گیگابایت\\):", parse_mode="MarkdownV2")
+                await update.message.reply_text(
+                    "📁 Send your file \\(up to 2 GB\\):",
+                    parse_mode="MarkdownV2",
+                )
 
         elif text == BTN_SETUP:
             if not DRIVE_ENABLED:
-                await update.message.reply_text("⚠️ Drive پیکربندی نشده.")
+                await update.message.reply_text("⚠️ Drive is not configured on this bot.")
                 return
             user_states[uid] = "WAIT_JSON"
             await update.message.reply_text(
-                "📎 فایل `credentials\\.json` رو از Google Cloud Console بفرست\\.",
+                "📎 Send your `credentials\\.json` file from Google Cloud Console\\.",
                 parse_mode="MarkdownV2",
             )
         return
@@ -391,13 +395,16 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         f = await update.message.document.get_file()
         await f.download_to_drive(os.path.join(CREDS_DIR, f"{uid}.json"))
         user_states[uid] = None
-        await update.message.reply_text("✅ Credentials ذخیره شد\\! حالا می‌تونی فایل آپلود کنی\\.", parse_mode="MarkdownV2")
+        await update.message.reply_text(
+            "✅ Credentials saved\\! You can now upload files to Drive\\.",
+            parse_mode="MarkdownV2",
+        )
         return
 
     if state == "WAIT_URL" and text:
         user_urls[uid] = text
         is_spotify = _is_spotify(text)
-        header = "🎵 *Spotify شناسایی شد*" if is_spotify else "📉 *کیفیت رو انتخاب کن:*"
+        header = "🎵 *Spotify detected — choose format:*" if is_spotify else "📉 *Choose quality:*"
         await update.message.reply_text(
             header,
             reply_markup=quality_keyboard(is_spotify),
@@ -408,26 +415,26 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if state == "WAIT_FILE":
         attachment = update.message.document or update.message.video or update.message.audio
         if not attachment:
-            await update.message.reply_text("⚠️ یه فایل بفرست\\.", parse_mode="MarkdownV2")
+            await update.message.reply_text("⚠️ Please send a file\\.", parse_mode="MarkdownV2")
             return
 
-        msg  = await update.message.reply_text("⏳ دریافت فایل…")
+        msg  = await update.message.reply_text("⏳ Receiving file…")
         name = getattr(attachment, "file_name", None) or "uploaded_file"
         path = os.path.join(DOWNLOADS_DIR, name)
         try:
             tg_file = await attachment.get_file()
             await tg_file.download_to_drive(path)
-            await msg.edit_text("☁️ آپلود به Drive…")
+            await msg.edit_text("☁️ Uploading to Drive…")
             link = await upload_to_drive(path, uid)
             await msg.edit_text(
-                f"✅ آپلود کامل شد\\!\n🔗 {link}" if link
-                else "❌ آپلود ناموفق\\. credentials یا Folder ID رو چک کن\\.",
+                f"✅ Upload complete\\!\n🔗 {link}" if link
+                else "❌ Upload failed\\. Check credentials and Folder ID\\.",
             )
         except RuntimeError as e:
             await msg.edit_text(str(e))
         except Exception as e:
             logger.exception("Upload error")
-            await msg.edit_text(f"❌ خطا:\n{str(e)[:400]}")
+            await msg.edit_text(f"❌ Error:\n{str(e)[:400]}")
         finally:
             if os.path.exists(path):
                 os.remove(path)
@@ -442,16 +449,16 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     url     = user_urls.get(uid)
 
     if not url:
-        await query.edit_message_text("⚠️ نشست منقضی شد. لینک رو دوباره بفرست.")
+        await query.edit_message_text("⚠️ Session expired. Please send the link again.")
         return
 
     label = "Spotify MP3" if _is_spotify(url) else quality.upper()
-    await query.edit_message_text(f"⏳ در حال دانلود ({label})…")
+    await query.edit_message_text(f"⏳ Downloading ({label})…")
 
     path = None
     try:
         path = await download_media(url, quality)
-        await query.edit_message_text("📤 در حال ارسال به تلگرام…")
+        await query.edit_message_text("📤 Sending to Telegram…")
 
         with open(path, "rb") as f:
             if quality == "mp3" or path.endswith(".mp3"):
@@ -468,15 +475,15 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         logger.error("Download error: %s", err)
 
         if "private" in err.lower() and "sign" not in err.lower():
-            hint = "❌ این ویدیو خصوصی یا محدوده.\nفقط محتوای عمومی قابل دانلوده."
+            hint = "❌ This video is private or restricted."
         elif "sign in" in err.lower() or "bot" in err.lower():
-            hint = "❌ پلتفرم دانلود رو بلاک کرد."
+            hint = "❌ Platform blocked the download. The content may require login."
         elif "unavailable" in err.lower() or "not available" in err.lower():
-            hint = "❌ ویدیو حذف شده یا در این منطقه دردسترس نیست."
+            hint = "❌ Video is unavailable or has been removed."
         elif "drm" in err.lower():
-            hint = "❌ این محتوا DRM داره و قابل دانلود نیست."
+            hint = "❌ This content is DRM-protected and cannot be downloaded."
         else:
-            hint = f"❌ دانلود ناموفق:\n`{err[:350]}`"
+            hint = f"❌ Download failed:\n`{err[:350]}`"
         await query.edit_message_text(hint, parse_mode="Markdown")
 
     finally:
