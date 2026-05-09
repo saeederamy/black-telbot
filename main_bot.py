@@ -10,8 +10,12 @@ import os
 import asyncio
 import logging
 import mimetypes
+import subprocess
 
-from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update, ReplyKeyboardMarkup,
+    InlineKeyboardButton, InlineKeyboardMarkup,
+)
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     filters, ContextTypes, CallbackQueryHandler,
@@ -42,12 +46,13 @@ BOT_DIR       = "/root/black_telbot"
 CREDS_DIR     = os.path.join(BOT_DIR, "creds")
 DOWNLOADS_DIR = os.path.join(BOT_DIR, "downloads")
 
-# Paste the ID from your shared Drive folder URL:
-# https://drive.google.com/drive/folders/<THIS_PART>
-DEFAULT_DRIVE_FOLDER_ID = "YOUR_SHARED_FOLDER_ID_HERE"
+# Drive folder ID — "DRIVE_FOLDER_DISABLED" = Drive feature hidden from menu
+DEFAULT_DRIVE_FOLDER_ID = "DRIVE_FOLDER_DISABLED"
 
 os.makedirs(CREDS_DIR,     exist_ok=True)
 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+
+DRIVE_ENABLED = DEFAULT_DRIVE_FOLDER_ID not in ("", "DRIVE_FOLDER_DISABLED")
 
 # ──────────────────────────────────────────────────────────────
 # STATE STORES
@@ -58,33 +63,22 @@ user_urls:   dict[int, str]        = {}
 # ──────────────────────────────────────────────────────────────
 # MENU
 # ──────────────────────────────────────────────────────────────
-BTN_DL    = "🎬 Download Media"
-BTN_UL    = "☁️ Upload to Drive"
-BTN_SETUP = "⚙️ Setup Credentials"
-BTN_ABOUT = "ℹ️ About"
-MAIN_MENU = [[BTN_DL, BTN_UL], [BTN_SETUP, BTN_ABOUT]]
+BTN_DL    = "🎬  Download"
+BTN_UL    = "☁️  Upload to Drive"
+BTN_SETUP = "🔑  Drive Setup"
+BTN_ABOUT = "🖤  About"
+
+def build_menu() -> ReplyKeyboardMarkup:
+    rows = [[BTN_DL]]
+    if DRIVE_ENABLED:
+        rows.append([BTN_UL, BTN_SETUP])
+    rows.append([BTN_ABOUT])
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
 # ══════════════════════════════════════════════════════════════
-# YT-DLP — COOKIELESS DOWNLOAD  (3-tier fallback)
+# DOWNLOAD ENGINE
 # ══════════════════════════════════════════════════════════════
-#
-#  Tier 1 — mweb player client
-#    YouTube's mobile-web endpoint skips the "confirm you're not a bot"
-#    gate entirely.  Works for the vast majority of public videos.
-#
-#  Tier 2 — tv_embedded player client
-#    YouTube's TV/embed endpoint authenticates via an API key that
-#    yt-dlp already has baked in — no user session required.
-#    Catches age-restricted or geo-blocked content that mweb can't serve.
-#
-#  Tier 3 — ios player client + Instagram GraphQL
-#    iOS client uses a different signing key and is the last reliable
-#    option before giving up.  For Instagram, the public GraphQL API
-#    is used (works for public posts without login).
-#
-#  No cookies are read or written anywhere in this chain.
-# ──────────────────────────────────────────────────────────────
 
 _CHROME_UA = (
     "Mozilla/5.0 (Linux; Android 14; Pixel 8) "
@@ -96,48 +90,55 @@ _INSTA_UA = (
     "Google/google; Pixel 7; oriole; oriole; en_US; 561394846)"
 )
 
+QUALITY_MAP = {
+    "1080": (
+        "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]"
+        "/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
+    ),
+    "720": (
+        "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]"
+        "/bestvideo[height<=720]+bestaudio/best[height<=720]/best"
+    ),
+    "480": (
+        "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]"
+        "/bestvideo[height<=480]+bestaudio/best[height<=480]/best"
+    ),
+    "360": (
+        "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]"
+        "/bestvideo[height<=360]+bestaudio/best[height<=360]/best"
+    ),
+    "mp3": "bestaudio/best",
+}
+
 
 def _make_opts(quality: str, extractor_args: dict, ua: str = _CHROME_UA) -> dict:
-    if quality == "mp3":
-        fmt = "bestaudio/best"
-    elif quality == "1080":
-        fmt = (
-            "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]"
-            "/bestvideo[height<=1080]+bestaudio"
-            "/best[height<=1080]/best"
-        )
-    else:
-        fmt = (
-            "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]"
-            "/bestvideo[height<=720]+bestaudio"
-            "/best[height<=720]/best"
-        )
-
     opts: dict = {
-        "format":                      fmt,
-        "outtmpl":                     os.path.join(DOWNLOADS_DIR, "%(title).80s.%(ext)s"),
-        "merge_output_format":         "mp4" if quality != "mp3" else None,
-        "quiet":                       True,
-        "no_warnings":                 True,
-        "noplaylist":                  True,
-        "nocheckcertificate":          True,
+        "format":                        QUALITY_MAP[quality],
+        "outtmpl":                       os.path.join(DOWNLOADS_DIR, "%(title).80s.%(ext)s"),
+        "merge_output_format":           "mp4" if quality != "mp3" else None,
+        "quiet":                         True,
+        "no_warnings":                   True,
+        "noplaylist":                    True,
+        "nocheckcertificate":            True,
         "concurrent_fragment_downloads": 4,
-        "extractor_args":              extractor_args,
+        "extractor_args":                extractor_args,
         "http_headers": {
             "User-Agent":      ua,
             "Accept-Language": "en-US,en;q=0.9",
             "Accept":          "text/html,application/xhtml+xml,*/*;q=0.8",
         },
     }
-
     if quality == "mp3":
         opts["postprocessors"] = [
-            {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"},
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            },
             {"key": "EmbedThumbnail"},
             {"key": "FFmpegMetadata"},
         ]
         opts["writethumbnail"] = True
-
     return opts
 
 
@@ -150,36 +151,77 @@ def _run_ydl(opts: dict, url: str) -> str:
         return path
 
 
-def _download_sync(url: str, quality: str) -> str:
-    """3-tier cookieless fallback chain. Raises on total failure."""
+def _is_spotify(url: str) -> bool:
+    return "spotify.com" in url.lower()
+
+
+def _spotify_download_sync(url: str) -> str:
+    """
+    Download via spotdl — fetches metadata from Spotify, audio from YouTube Music.
+    No DRM involved. Requires: pip install spotdl
+    """
+    result = subprocess.run(
+        [
+            "spotdl", "download", url,
+            "--output", DOWNLOADS_DIR,
+            "--format", "mp3",
+            "--bitrate", "192k",
+            "--no-cache",
+        ],
+        capture_output=True, text=True, timeout=300,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"spotdl error:\n{(result.stderr or result.stdout)[:400]}")
+
+    mp3s = sorted(
+        [os.path.join(DOWNLOADS_DIR, f) for f in os.listdir(DOWNLOADS_DIR) if f.endswith(".mp3")],
+        key=os.path.getmtime, reverse=True,
+    )
+    if not mp3s:
+        raise RuntimeError("spotdl finished but no MP3 found.")
+    return mp3s[0]
+
+
+def _ydl_download_sync(url: str, quality: str) -> str:
+    """
+    4-tier cookieless fallback chain.
+
+    The key insight for YouTube "private video" errors on public content:
+    Some player clients (android, mweb alone) trigger a different auth
+    path that can mislabel public videos as private.  Using `web` as the
+    first client avoids this, with mweb + tv_embedded + ios as fallbacks.
+    """
     is_instagram = "instagram.com" in url.lower()
+    ua = _INSTA_UA if is_instagram else _CHROME_UA
 
-    # Tier 1 — mweb
-    try:
-        return _run_ydl(
-            _make_opts(quality, {"youtube": {"player_client": ["mweb"]}}),
-            url,
-        )
-    except Exception as e1:
-        logger.warning("Tier 1 (mweb) failed: %s", e1)
+    tiers = [
+        # web client: standard path, handles most public YouTube correctly
+        ("web",         {"youtube": {"player_client": ["web"]}}),
+        # mweb: mobile endpoint, different bot-check path
+        ("mweb",        {"youtube": {"player_client": ["mweb"]}}),
+        # tv_embedded: no user session required, good for age-restricted
+        ("tv_embedded", {"youtube": {"player_client": ["tv_embedded"]}}),
+        # ios: different signing key, last resort
+        ("ios",         {"youtube": {"player_client": ["ios"]},
+                         "instagram": {"api": ["graphql"]}}),
+    ]
 
-    # Tier 2 — tv_embedded
-    try:
-        return _run_ydl(
-            _make_opts(quality, {"youtube": {"player_client": ["tv_embedded"]}}),
-            url,
-        )
-    except Exception as e2:
-        logger.warning("Tier 2 (tv_embedded) failed: %s", e2)
+    last_err: Exception = RuntimeError("All download tiers failed.")
+    for name, args in tiers:
+        try:
+            logger.info("Trying tier: %s", name)
+            return _run_ydl(_make_opts(quality, args, ua=ua), url)
+        except Exception as e:
+            logger.warning("Tier %s failed: %s", name, e)
+            last_err = e
 
-    # Tier 3 — ios / Instagram GraphQL
-    ua   = _INSTA_UA if is_instagram else _CHROME_UA
-    args = {"youtube": {"player_client": ["ios"]}, "instagram": {"api": ["graphql"]}}
-    try:
-        return _run_ydl(_make_opts(quality, args, ua=ua), url)
-    except Exception as e3:
-        logger.warning("Tier 3 (ios/graphql) failed: %s", e3)
-        raise  # Surface the final error to the handler
+    raise last_err
+
+
+def _download_sync(url: str, quality: str) -> str:
+    if _is_spotify(url):
+        return _spotify_download_sync(url)
+    return _ydl_download_sync(url, quality)
 
 
 async def download_media(url: str, quality: str) -> str:
@@ -195,20 +237,20 @@ def _upload_sync(file_path: str, user_id: int) -> str | None:
     if not os.path.exists(cred_file):
         return None
 
-    creds   = service_account.Credentials.from_service_account_file(
+    creds = service_account.Credentials.from_service_account_file(
         cred_file, scopes=["https://www.googleapis.com/auth/drive.file"]
     )
     service = build("drive", "v3", credentials=creds)
-
     mime, _ = mimetypes.guess_type(file_path)
-    mime    = mime or "application/octet-stream"
-    req     = service.files().create(
+    mime = mime or "application/octet-stream"
+
+    req = service.files().create(
         body={"name": os.path.basename(file_path), "parents": [DEFAULT_DRIVE_FOLDER_ID]},
-        media_body=MediaFileUpload(file_path, mimetype=mime, resumable=True,
-                                   chunksize=8 * 1024 * 1024),
+        media_body=MediaFileUpload(
+            file_path, mimetype=mime, resumable=True, chunksize=8 * 1024 * 1024
+        ),
         fields="id,webViewLink",
     )
-
     try:
         resp = None
         while resp is None:
@@ -220,14 +262,67 @@ def _upload_sync(file_path: str, user_id: int) -> str | None:
         if "storageQuotaExceeded" in str(e):
             raise RuntimeError(
                 "❌ Drive quota exceeded.\n"
-                "Ensure DEFAULT_DRIVE_FOLDER_ID is correct and the folder is "
-                "shared with the Service Account (Editor permission)."
+                "Make sure the folder is shared with the Service Account (Editor)."
             )
         raise
 
 
 async def upload_to_drive(file_path: str, user_id: int) -> str | None:
     return await asyncio.to_thread(_upload_sync, file_path, user_id)
+
+
+# ══════════════════════════════════════════════════════════════
+# UI TEXTS
+# ══════════════════════════════════════════════════════════════
+
+WELCOME = (
+    "🖤 *BLACK TELBOT* 🤍\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    "سلام\\! من *Black Telbot* هستم،\n"
+    "ربات دانلود و آپلود رسانه\\.\n\n"
+    "🎬 *دانلود از:*\n"
+    "  ▸ YouTube \\| Instagram\n"
+    "  ▸ Twitter \\| Spotify\n"
+    "  ▸ \\+1000 سایت دیگه\n\n"
+    "📥 کیفیت: *۳۶۰p تا ۱۰۸۰p* و *MP3*\n\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    "👨‍💻 *توسعه‌دهنده:* [Saeed Eramy](https://github.com/saeederamy)\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    "یه گزینه انتخاب کن 👇"
+)
+
+ABOUT_TEXT = (
+    "🖤 *BLACK TELBOT* 🤍\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    "ربات پیشرفته دانلود رسانه\n\n"
+    "✦ YouTube، Instagram، Twitter\n"
+    "✦ Spotify \\(بدون DRM\\)\n"
+    "✦ کیفیت ۳۶۰p تا ۱۰۸۰p و MP3\n"
+    "✦ آپلود تا ۲GB به Google Drive\n\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    "👨‍💻 [Saeed Eramy](https://github.com/saeederamy) — "
+    "[black\\-telbot](https://github.com/saeederamy/black-telbot)\n\n"
+    "🪙 *LTC:*\n"
+    "`ltc1qxhuvs6j0suvv50nqjsuujqlr3u4ekfmys2ydps`"
+)
+
+
+def quality_keyboard(is_spotify: bool = False) -> InlineKeyboardMarkup:
+    if is_spotify:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("🎵  دانلود MP3", callback_data="q_mp3")]
+        ])
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🎬 1080p", callback_data="q_1080"),
+            InlineKeyboardButton("🎞 720p",  callback_data="q_720"),
+        ],
+        [
+            InlineKeyboardButton("📹 480p",  callback_data="q_480"),
+            InlineKeyboardButton("📱 360p",  callback_data="q_360"),
+        ],
+        [InlineKeyboardButton("🎧 MP3 — 192kbps", callback_data="q_mp3")],
+    ])
 
 
 # ══════════════════════════════════════════════════════════════
@@ -238,9 +333,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     user_states[uid] = None
     await update.message.reply_text(
-        "🖤 *BLACK TELBOT* 🤍\n_develop by Saeed Eramy_\n\nSelect an option:",
-        reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True),
-        parse_mode="Markdown",
+        WELCOME,
+        reply_markup=build_menu(),
+        parse_mode="MarkdownV2",
+        disable_web_page_preview=True,
     )
 
 
@@ -254,31 +350,40 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         if text == BTN_ABOUT:
             await update.message.reply_text(
-                "🖤 *BLACK TELBOT* 🤍\n"
-                "*develop by Saeed Eramy*\n"
-                "🐙 [github.com/saeederamy](https://github.com/saeederamy)\n"
-                "🔗 [black-telbot repo](https://github.com/saeederamy/black-telbot)\n\n"
-                "🪙 *LTC:* `ltc1qxhuvs6j0suvv50nqjsuujqlr3u4ekfmys2ydps`",
-                parse_mode="Markdown",
+                ABOUT_TEXT,
+                parse_mode="MarkdownV2",
                 disable_web_page_preview=True,
             )
+
         elif text == BTN_DL:
             user_states[uid] = "WAIT_URL"
-            await update.message.reply_text("🔗 Send the URL:")
+            await update.message.reply_text(
+                "🔗 *لینک رو بفرست:*\n\nYouTube · Instagram · Twitter · Spotify · \\.\\.\\.",
+                parse_mode="MarkdownV2",
+            )
+
         elif text == BTN_UL:
+            if not DRIVE_ENABLED:
+                await update.message.reply_text("⚠️ Drive پیکربندی نشده.")
+                return
             if not os.path.exists(os.path.join(CREDS_DIR, f"{uid}.json")):
                 await update.message.reply_text(
-                    "⚠️ No credentials found.\nUse ⚙️ *Setup Credentials* first.",
-                    parse_mode="Markdown",
+                    "⚠️ هنوز credentials تنظیم نشده\\.\n"
+                    "از دکمه 🔑 *Drive Setup* استفاده کن\\.",
+                    parse_mode="MarkdownV2",
                 )
             else:
                 user_states[uid] = "WAIT_FILE"
-                await update.message.reply_text("📁 Send the file (up to 2 GB):")
+                await update.message.reply_text("📁 فایل رو بفرست \\(تا ۲ گیگابایت\\):", parse_mode="MarkdownV2")
+
         elif text == BTN_SETUP:
+            if not DRIVE_ENABLED:
+                await update.message.reply_text("⚠️ Drive پیکربندی نشده.")
+                return
             user_states[uid] = "WAIT_JSON"
             await update.message.reply_text(
-                "📎 Send your `credentials.json` from Google Cloud Console.",
-                parse_mode="Markdown",
+                "📎 فایل `credentials\\.json` رو از Google Cloud Console بفرست\\.",
+                parse_mode="MarkdownV2",
             )
         return
 
@@ -286,42 +391,43 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         f = await update.message.document.get_file()
         await f.download_to_drive(os.path.join(CREDS_DIR, f"{uid}.json"))
         user_states[uid] = None
-        await update.message.reply_text("✅ Credentials saved!")
+        await update.message.reply_text("✅ Credentials ذخیره شد\\! حالا می‌تونی فایل آپلود کنی\\.", parse_mode="MarkdownV2")
         return
 
     if state == "WAIT_URL" and text:
         user_urls[uid] = text
-        kb = [
-            [InlineKeyboardButton("🎬 1080p", callback_data="q_1080")],
-            [InlineKeyboardButton("🎞️  720p", callback_data="q_720")],
-            [InlineKeyboardButton("🎧 MP3",   callback_data="q_mp3")],
-        ]
-        await update.message.reply_text("📉 Choose quality:", reply_markup=InlineKeyboardMarkup(kb))
+        is_spotify = _is_spotify(text)
+        header = "🎵 *Spotify شناسایی شد*" if is_spotify else "📉 *کیفیت رو انتخاب کن:*"
+        await update.message.reply_text(
+            header,
+            reply_markup=quality_keyboard(is_spotify),
+            parse_mode="MarkdownV2",
+        )
         return
 
     if state == "WAIT_FILE":
         attachment = update.message.document or update.message.video or update.message.audio
         if not attachment:
-            await update.message.reply_text("⚠️ Please send a file.")
+            await update.message.reply_text("⚠️ یه فایل بفرست\\.", parse_mode="MarkdownV2")
             return
 
-        msg  = await update.message.reply_text("⏳ Receiving file…")
+        msg  = await update.message.reply_text("⏳ دریافت فایل…")
         name = getattr(attachment, "file_name", None) or "uploaded_file"
         path = os.path.join(DOWNLOADS_DIR, name)
         try:
             tg_file = await attachment.get_file()
             await tg_file.download_to_drive(path)
-            await msg.edit_text("☁️ Uploading to Drive…")
+            await msg.edit_text("☁️ آپلود به Drive…")
             link = await upload_to_drive(path, uid)
             await msg.edit_text(
-                f"✅ Upload complete!\n🔗 {link}" if link
-                else "❌ Upload failed. Check credentials and FOLDER_ID."
+                f"✅ آپلود کامل شد\\!\n🔗 {link}" if link
+                else "❌ آپلود ناموفق\\. credentials یا Folder ID رو چک کن\\.",
             )
         except RuntimeError as e:
             await msg.edit_text(str(e))
         except Exception as e:
             logger.exception("Upload error")
-            await msg.edit_text(f"❌ Error:\n{str(e)[:400]}")
+            await msg.edit_text(f"❌ خطا:\n{str(e)[:400]}")
         finally:
             if os.path.exists(path):
                 os.remove(path)
@@ -336,16 +442,19 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     url     = user_urls.get(uid)
 
     if not url:
-        await query.edit_message_text("⚠️ Session expired. Send the URL again.")
+        await query.edit_message_text("⚠️ نشست منقضی شد. لینک رو دوباره بفرست.")
         return
 
-    await query.edit_message_text(f"⏳ Downloading ({quality.upper()})…")
+    label = "Spotify MP3" if _is_spotify(url) else quality.upper()
+    await query.edit_message_text(f"⏳ در حال دانلود ({label})…")
+
     path = None
     try:
         path = await download_media(url, quality)
-        await query.edit_message_text("📤 Sending…")
+        await query.edit_message_text("📤 در حال ارسال به تلگرام…")
+
         with open(path, "rb") as f:
-            if quality == "mp3":
+            if quality == "mp3" or path.endswith(".mp3"):
                 await context.bot.send_audio(chat_id=uid, audio=f)
             else:
                 await context.bot.send_video(chat_id=uid, video=f, supports_streaming=True)
@@ -357,14 +466,17 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     except Exception as e:
         err = str(e)
         logger.error("Download error: %s", err)
-        if "Sign in" in err or "bot" in err.lower():
-            hint = "❌ Platform rejected the download.\nThis video may be restricted or private."
-        elif "private" in err.lower() or "login" in err.lower():
-            hint = "❌ Content is private or requires login."
+
+        if "private" in err.lower() and "sign" not in err.lower():
+            hint = "❌ این ویدیو خصوصی یا محدوده.\nفقط محتوای عمومی قابل دانلوده."
+        elif "sign in" in err.lower() or "bot" in err.lower():
+            hint = "❌ پلتفرم دانلود رو بلاک کرد."
         elif "unavailable" in err.lower() or "not available" in err.lower():
-            hint = "❌ Video is unavailable or has been removed."
+            hint = "❌ ویدیو حذف شده یا در این منطقه دردسترس نیست."
+        elif "drm" in err.lower():
+            hint = "❌ این محتوا DRM داره و قابل دانلود نیست."
         else:
-            hint = f"❌ Download failed:\n`{err[:350]}`"
+            hint = f"❌ دانلود ناموفق:\n`{err[:350]}`"
         await query.edit_message_text(hint, parse_mode="Markdown")
 
     finally:
