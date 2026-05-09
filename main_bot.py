@@ -111,6 +111,25 @@ QUALITY_MAP = {
     "mp3": "bestaudio/best",
 }
 
+# Auth files — set by setup.sh, checked at runtime
+COOKIES_FILE = os.path.join(BOT_DIR, "cookies.txt")
+PO_TOKEN_FILE = os.path.join(BOT_DIR, "po_token.txt")
+
+
+def _read_po_token() -> tuple[str, str] | None:
+    """Return (visitor_data, po_token) if po_token.txt exists and is valid."""
+    if not os.path.isfile(PO_TOKEN_FILE):
+        return None
+    try:
+        with open(PO_TOKEN_FILE) as f:
+            lines = [l.strip() for l in f if l.strip()]
+        # File format (two lines): visitor_data\npo_token
+        if len(lines) >= 2:
+            return lines[0], lines[1]
+    except Exception:
+        pass
+    return None
+
 
 def _make_opts(quality: str, extractor_args: dict, ua: str = _CHROME_UA) -> dict:
     opts: dict = {
@@ -129,6 +148,21 @@ def _make_opts(quality: str, extractor_args: dict, ua: str = _CHROME_UA) -> dict
             "Accept":          "text/html,application/xhtml+xml,*/*;q=0.8",
         },
     }
+
+    # Inject PO Token if available (preferred — no cookies needed)
+    pot = _read_po_token()
+    if pot:
+        visitor_data, po_token = pot
+        ea = opts.setdefault("extractor_args", {})
+        yt_ea = ea.setdefault("youtube", {})
+        yt_ea["visitor_data"] = [visitor_data]
+        yt_ea["po_token"]     = [f"web+{po_token}"]
+        logger.info("Using PO Token for YouTube auth")
+    # Fallback: cookies file
+    elif os.path.isfile(COOKIES_FILE):
+        opts["cookiefile"] = COOKIES_FILE
+        logger.info("Using cookies.txt for YouTube auth")
+
     if quality == "mp3":
         opts["postprocessors"] = [
             {
