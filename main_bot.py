@@ -156,14 +156,23 @@ def _is_spotify(url: str) -> bool:
     return "spotify.com" in url.lower()
 
 
+# spotdl lives inside the venv — never rely on PATH
+SPOTDL_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "venv", "bin", "spotdl")
+
+
 def _spotify_download_sync(url: str) -> str:
     """
     Download via spotdl — fetches metadata from Spotify, audio from YouTube Music.
-    No DRM involved. Requires: pip install spotdl
+    No DRM involved.
+
+    Uses the absolute venv path so it works regardless of the calling user's PATH.
     """
+    # Prefer venv binary; fall back to system spotdl if venv path missing
+    spotdl_cmd = SPOTDL_BIN if os.path.isfile(SPOTDL_BIN) else "spotdl"
+
     result = subprocess.run(
         [
-            "spotdl", "download", url,
+            spotdl_cmd, "download", url,
             "--output", DOWNLOADS_DIR,
             "--format", "mp3",
             "--bitrate", "192k",
@@ -185,26 +194,46 @@ def _spotify_download_sync(url: str) -> str:
 
 def _ydl_download_sync(url: str, quality: str) -> str:
     """
-    4-tier cookieless fallback chain.
+    5-tier cookieless fallback chain for YouTube / Instagram / Twitter / etc.
 
-    The key insight for YouTube "private video" errors on public content:
-    Some player clients (android, mweb alone) trigger a different auth
-    path that can mislabel public videos as private. Using `web` as the
-    first client avoids this, with mweb + tv_embedded + ios as fallbacks.
+    Tier order (2025):
+    1. ANDROID_EMBEDDED — uses the Android embedded-player API key, completely
+       bypasses the "Sign in to confirm you're not a bot" gate. Most reliable.
+    2. ANDROID_MUSIC    — YouTube Music Android client, different signing key,
+       good second option for music/audio content.
+    3. TV_EMBEDDED      — TV/embed endpoint, no user session required, handles
+       age-restricted public videos without cookies.
+    4. MWEB             — mobile-web endpoint, separate auth path from desktop.
+    5. IOS + graphql    — iOS signing key + Instagram GraphQL as last resort.
+
+    Note: 'web' and plain 'android' are intentionally excluded — they are the
+    first to be fingerprinted and blocked by YouTube's bot-detection system.
     """
     is_instagram = "instagram.com" in url.lower()
     ua = _INSTA_UA if is_instagram else _CHROME_UA
 
     tiers = [
-        # web client: standard path, handles most public YouTube correctly
-        ("web",         {"youtube": {"player_client": ["web"]}}),
-        # mweb: mobile endpoint, different bot-check path
-        ("mweb",        {"youtube": {"player_client": ["mweb"]}}),
-        # tv_embedded: no user session required, good for age-restricted
-        ("tv_embedded", {"youtube": {"player_client": ["tv_embedded"]}}),
-        # ios: different signing key, last resort
-        ("ios",         {"youtube": {"player_client": ["ios"]},
-                         "instagram": {"api": ["graphql"]}}),
+        # Tier 1: most reliable bypass for bot-check gate (2025)
+        ("android_embedded", {
+            "youtube": {"player_client": ["android_embedded"]},
+        }),
+        # Tier 2: YouTube Music client, different API key
+        ("android_music", {
+            "youtube": {"player_client": ["android_music"]},
+        }),
+        # Tier 3: TV embed, no auth needed, handles age-restricted
+        ("tv_embedded", {
+            "youtube": {"player_client": ["tv_embedded"]},
+        }),
+        # Tier 4: mobile web, separate bot-check path
+        ("mweb", {
+            "youtube": {"player_client": ["mweb"]},
+        }),
+        # Tier 5: iOS key + Instagram GraphQL fallback
+        ("ios", {
+            "youtube":   {"player_client": ["ios"]},
+            "instagram": {"api": ["graphql"]},
+        }),
     ]
 
     last_err: Exception = RuntimeError("All download tiers failed.")
@@ -473,17 +502,8 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     except Exception as e:
         err = str(e)
         logger.error("Download error: %s", err)
-
-        if "private" in err.lower() and "sign" not in err.lower():
-            hint = "❌ This video is private or restricted."
-        elif "sign in" in err.lower() or "bot" in err.lower():
-            hint = "❌ Platform blocked the download. The content may require login."
-        elif "unavailable" in err.lower() or "not available" in err.lower():
-            hint = "❌ Video is unavailable or has been removed."
-        elif "drm" in err.lower():
-            hint = "❌ This content is DRM-protected and cannot be downloaded."
-        else:
-            hint = f"❌ Download failed:\n`{err[:350]}`"
+        # Show raw error for diagnosis
+        hint = f"❌ Download failed:\n`{err[:400]}`"
         await query.edit_message_text(hint, parse_mode="Markdown")
 
     finally:
