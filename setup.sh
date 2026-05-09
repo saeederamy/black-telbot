@@ -246,6 +246,120 @@ action_drive_disable() {
     press_enter; show_menu
 }
 
+
+# ──────────────────────────────────────────────────────────────
+# YOUTUBE AUTH  (PO Token + cookies fallback)
+# ──────────────────────────────────────────────────────────────
+#
+# Why this is needed:
+#   YouTube detects datacenter IPs and forces a "Sign in to confirm
+#   you're not a bot" challenge. Two solutions work without a VPN:
+#
+#   1. PO Token (preferred) — a visitor token extracted from a real
+#      browser session. No account or login required. Generated once
+#      via bgutil-ytdlp-pot-provider (runs as a local Node.js server).
+#      Valid for ~24–48 hours; re-run this option to refresh.
+#
+#   2. cookies.txt (fallback) — export your YouTube cookies from a
+#      browser where you are logged in. More stable but requires a
+#      Google account. Use the yt-dlp browser extension to export.
+#
+# The bot uses PO Token first; if po_token.txt is absent it tries
+# cookies.txt; if neither exists it tries unauthenticated (may fail).
+# ──────────────────────────────────────────────────────────────
+
+action_yt_po_token() {
+    banner
+    echo -e "${BOLD}  ── YouTube PO Token Setup ──${R}\n"
+    echo -e "  Generates a visitor token from a real browser fingerprint."
+    echo -e "  No Google account needed.\n"
+    echo -e "  Requirements: Node.js >= 18\n"
+
+    if [[ ! -f "$BOT_DIR/main_bot.py" ]]; then
+        err "Bot is not installed yet."; press_enter; show_menu; return
+    fi
+
+    # Install Node.js if missing
+    if ! command -v node &>/dev/null; then
+        info "Installing Node.js..."
+        curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - &>/dev/null
+        sudo apt-get install -y -qq nodejs
+    fi
+    ok "Node.js $(node -v)"
+
+    # Install bgutil pot provider
+    BGUTIL_DIR="$BOT_DIR/bgutil-pot"
+    if [[ ! -d "$BGUTIL_DIR" ]]; then
+        info "Installing bgutil-ytdlp-pot-provider..."
+        git clone -q https://github.com/nicholasstephan/bgutil-ytdlp-pot-provider.git "$BGUTIL_DIR" 2>/dev/null             || { err "git clone failed. Make sure git is installed (apt install git)."; press_enter; show_menu; return; }
+        cd "$BGUTIL_DIR" && npm install --silent
+    fi
+
+    info "Generating PO Token (this takes ~10 seconds)..."
+    cd "$BGUTIL_DIR"
+
+    # Run the generator and capture visitor_data + po_token
+    local output
+    output=$(node getPoToken.js 2>&1) || {
+        err "PO Token generation failed:\n$output"
+        press_enter; show_menu; return
+    }
+
+    # Parse output — expected lines: "visitorData: <val>" and "poToken: <val>"
+    local visitor_data po_token
+    visitor_data=$(echo "$output" | grep -i "visitor" | grep -oP '(?<=: )\S+' | head -1)
+    po_token=$(echo    "$output" | grep -i "poToken\|po_token" | grep -oP '(?<=: )\S+' | head -1)
+
+    if [[ -z "$visitor_data" || -z "$po_token" ]]; then
+        err "Could not parse token output:\n$output"
+        press_enter; show_menu; return
+    fi
+
+    # Write to po_token.txt (two lines: visitor_data, po_token)
+    printf "%s\n%s\n" "$visitor_data" "$po_token" > "$BOT_DIR/po_token.txt"
+    ok "PO Token saved to $BOT_DIR/po_token.txt"
+
+    sudo systemctl restart "$SERVICE" 2>/dev/null || true
+    sleep 1
+    ok "Bot restarted — YouTube downloads should work now."
+    info "Tokens expire in ~24-48h. Re-run this option to refresh."
+    press_enter; show_menu
+}
+
+action_yt_cookies() {
+    banner
+    echo -e "${BOLD}  ── YouTube Cookies Setup ──${R}\n"
+    echo -e "  How to get cookies.txt:"
+    echo -e "  ${CYAN}1.${R} Install browser extension: 'Get cookies.txt LOCALLY'"
+    echo -e "     ${GRAY}Chrome: https://chrome.google.com/webstore/search/get+cookies.txt${R}"
+    echo -e "  ${CYAN}2.${R} Log in to YouTube in your browser"
+    echo -e "  ${CYAN}3.${R} Go to youtube.com, click the extension, export cookies"
+    echo -e "  ${CYAN}4.${R} Copy the file content\n"
+    echo -e "  ${YELLOW}Note: cookies expire periodically — re-run this option to refresh.${R}\n"
+
+    if ! ask_yn "Open editor to paste cookies.txt content now?"; then
+        show_menu; return
+    fi
+
+    if [[ ! -f "$BOT_DIR/main_bot.py" ]]; then
+        err "Bot is not installed yet."; press_enter; show_menu; return
+    fi
+
+    echo -e "\n  ${GRAY}Editor opening — paste content, then Ctrl+O Enter Ctrl+X to save.${R}"
+    sleep 2
+    nano "$BOT_DIR/cookies.txt"
+
+    if [[ -s "$BOT_DIR/cookies.txt" ]]; then
+        ok "cookies.txt saved."
+        sudo systemctl restart "$SERVICE" 2>/dev/null || true
+        sleep 1
+        ok "Bot restarted."
+    else
+        warn "File is empty — cookies not saved."
+    fi
+    press_enter; show_menu
+}
+
 # ──────────────────────────────────────────────────────────────
 # INSTALL ACTIONS
 # ──────────────────────────────────────────────────────────────
@@ -389,14 +503,16 @@ show_menu() {
     echo -e "  ${BOLD}[2]${R} Install — Heavy       ${GRAY}2 GB + Docker${R}"
     echo -e "  ${BOLD}[3]${R} Update                ${GRAY}code + yt-dlp + spotdl${R}"
     echo -e "  ${BOLD}[4]${R} Live logs"
-    echo -e "  ${BOLD}[5]${R} Google Drive setup    ${CYAN}optional${R}"
-    echo -e "  ${BOLD}[6]${R} Disable Drive"
-    echo -e "  ${BOLD}[7]${R} Stop bot"
-    echo -e "  ${BOLD}[8]${R} Restart bot"
-    echo -e "  ${BOLD}[9]${R} Complete wipe         ${RED}danger${R}"
+    echo -e "  ${BOLD}[5]${R} YouTube — PO Token    ${CYAN}fix bot-check${R}"
+    echo -e "  ${BOLD}[6]${R} YouTube — Cookies     ${CYAN}alternative fix${R}"
+    echo -e "  ${BOLD}[7]${R} Google Drive setup    ${CYAN}optional${R}"
+    echo -e "  ${BOLD}[8]${R} Disable Drive"
+    echo -e "  ${BOLD}[9]${R} Stop bot"
+    echo -e "  ${BOLD}[r]${R} Restart bot"
+    echo -e "  ${BOLD}[w]${R} Complete wipe         ${RED}danger${R}"
     echo -e "  ${BOLD}[0]${R} Exit"
     echo
-    read -rp "  Select [0-9]: " choice
+    read -rp "  Select: " choice
     echo
 
     case "${choice:-}" in
@@ -404,11 +520,13 @@ show_menu() {
         2) action_install_heavy    ;;
         3) action_update           ;;
         4) action_logs             ;;
-        5) action_drive_setup      ;;
-        6) action_drive_disable    ;;
-        7) action_stop             ;;
-        8) action_restart          ;;
-        9) action_wipe             ;;
+        5) action_yt_po_token      ;;
+        6) action_yt_cookies       ;;
+        7) action_drive_setup      ;;
+        8) action_drive_disable    ;;
+        9) action_stop             ;;
+        r) action_restart          ;;
+        w) action_wipe             ;;
         0) exit 0                  ;;
         *) show_menu               ;;
     esac
