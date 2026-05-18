@@ -156,11 +156,17 @@ def _ydl_download_sync(url: str, quality: str) -> str:
     What makes YouTube work from a datacenter/server IP (no VPN):
     - --js-runtimes node          : Node.js runtime for the challenge solver
     - --remote-components ejs:github : fetches the EJS signature / n-sig solver
-    - player_client=web,tv        : clients that accept a GVS PO Token
+    - player_client=mweb,tv_simply,web : clients that expose plain-https
+                                    adaptive formats and accept a PO Token
+                                    (plain web only yields the 403-prone
+                                     legacy format 18; tv is DRM-only)
     - youtubepot-bgutilhttp       : local bgutil server provides the PO Token
                                     (needs bgutil-pot.service + the
                                      bgutil-ytdlp-pot-provider yt-dlp plugin)
-    - cookies.txt                 : optional logged-in fallback
+    - cookies.txt                 : logged-in fallback. REQUIRED for videos /
+                                    server IPs that YouTube has flagged: once
+                                    flagged, the PO Token alone is not enough
+                                    and the CDN returns HTTP 403.
 
     NOTE: no proxy is used by default. Routing through a proxy that is not
     actually running makes every request fail with "connection refused".
@@ -178,7 +184,7 @@ def _ydl_download_sync(url: str, quality: str) -> str:
         "--concurrent-fragments", "4",
         "--js-runtimes", "node",
         "--remote-components", "ejs:github",
-        "--extractor-args", "youtube:player_client=web,tv",
+        "--extractor-args", "youtube:player_client=mweb,tv_simply,web",
         "--extractor-args", f"youtubepot-bgutilhttp:base_url={BGUTIL_SERVER}",
         "--extractor-args", f"youtubepot-bgutilscript:server_home={BGUTIL_SERVER_HOME}",
     ]
@@ -450,8 +456,26 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     except Exception as e:
         err = str(e)
         logger.error("Download error: %s", err)
-        hint = f"Download failed:\n`{err[:400]}`"
-        await query.edit_message_text(hint, parse_mode="Markdown")
+        low = err.lower()
+        blocked = any(s in low for s in (
+            "sign in to confirm", "not a bot", "please sign in",
+            "http error 403", "403: forbidden", "use --cookies",
+        ))
+        if blocked and "youtu" in url.lower():
+            hint = (
+                "YouTube blocked this video.\n\n"
+                "The PO Token is active, but YouTube has flagged this "
+                "server's IP for this video — for flagged IPs a logged-in "
+                "account is required.\n\n"
+                "Fix: on the server run  black-telbot , choose option [6] "
+                "(YouTube — Cookies), paste a fresh cookies.txt, then retry. "
+                "Most other videos still work without cookies."
+            )
+            await query.edit_message_text(hint)
+        else:
+            await query.edit_message_text(
+                f"Download failed:\n`{err[:400]}`", parse_mode="Markdown"
+            )
 
     finally:
         if path and os.path.exists(path):
