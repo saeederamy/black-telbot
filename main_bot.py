@@ -49,6 +49,10 @@ DOWNLOADS_DIR = os.path.join(BOT_DIR, "downloads")
 # Drive folder ID — "DRIVE_FOLDER_DISABLED" = Drive feature hidden from menu
 DEFAULT_DRIVE_FOLDER_ID = "DRIVE_FOLDER_DISABLED"
 
+# bgutil PO Token server (systemd: bgutil-pot.service)
+BGUTIL_SERVER      = "http://127.0.0.1:4416"
+BGUTIL_SERVER_HOME = os.path.join(BOT_DIR, "bgutil-server")
+
 os.makedirs(CREDS_DIR,     exist_ok=True)
 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 
@@ -111,27 +115,26 @@ QUALITY_MAP = {
     "mp3": "bestaudio/best",
 }
 
-# Auth files — set by setup.sh, checked at runtime
-COOKIES_FILE = os.path.join(BOT_DIR, "cookies.txt")
-PO_TOKEN_FILE = os.path.join(BOT_DIR, "po_token.txt")
 
+def _make_opts(quality: str, extra_extractor_args: dict | None = None, ua: str = _CHROME_UA) -> dict:
+    """
+    Build yt-dlp options with bgutil PO Token provider.
 
-def _read_po_token() -> tuple[str, str] | None:
-    """Return (visitor_data, po_token) if po_token.txt exists and is valid."""
-    if not os.path.isfile(PO_TOKEN_FILE):
-        return None
-    try:
-        with open(PO_TOKEN_FILE) as f:
-            lines = [l.strip() for l in f if l.strip()]
-        # File format (two lines): visitor_data\npo_token
-        if len(lines) >= 2:
-            return lines[0], lines[1]
-    except Exception:
-        pass
-    return None
+    Key settings that make YouTube work on datacenter IPs:
+    - player_client=web        : web client triggers GVS PO Token requirement
+    - youtubepot-bgutilhttp    : bgutil HTTP server provides the PO Token
+    - js_runtimes=node         : Node.js solves JS challenges
+    - remote_components=ejs:github : downloads challenge solver from GitHub
+    """
+    extractor_args = {
+        "youtube":                 {"player_client": ["web"]},
+        "youtubepot-bgutilhttp":   {"base_url": [BGUTIL_SERVER]},
+        "youtubepot-bgutilscript": {"server_home": [BGUTIL_SERVER_HOME]},
+    }
+    if extra_extractor_args:
+        for k, v in extra_extractor_args.items():
+            extractor_args.setdefault(k, {}).update(v)
 
-
-def _make_opts(quality: str, extractor_args: dict, ua: str = _CHROME_UA) -> dict:
     opts: dict = {
         "format":                        QUALITY_MAP[quality],
         "outtmpl":                       os.path.join(DOWNLOADS_DIR, "%(title).80s.%(ext)s"),
@@ -142,26 +145,14 @@ def _make_opts(quality: str, extractor_args: dict, ua: str = _CHROME_UA) -> dict
         "nocheckcertificate":            True,
         "concurrent_fragment_downloads": 4,
         "extractor_args":                extractor_args,
+        "js_runtimes":                   ["node"],
+        "remote_components":             ["ejs:github"],
         "http_headers": {
             "User-Agent":      ua,
             "Accept-Language": "en-US,en;q=0.9",
             "Accept":          "text/html,application/xhtml+xml,*/*;q=0.8",
         },
     }
-
-    # Inject PO Token if available (preferred — no cookies needed)
-    pot = _read_po_token()
-    if pot:
-        visitor_data, po_token = pot
-        ea = opts.setdefault("extractor_args", {})
-        yt_ea = ea.setdefault("youtube", {})
-        yt_ea["visitor_data"] = [visitor_data]
-        yt_ea["po_token"]     = [f"web+{po_token}"]
-        logger.info("Using PO Token for YouTube auth")
-    # Fallback: cookies file
-    elif os.path.isfile(COOKIES_FILE):
-        opts["cookiefile"] = COOKIES_FILE
-        logger.info("Using cookies.txt for YouTube auth")
 
     if quality == "mp3":
         opts["postprocessors"] = [
@@ -174,6 +165,7 @@ def _make_opts(quality: str, extractor_args: dict, ua: str = _CHROME_UA) -> dict
             {"key": "FFmpegMetadata"},
         ]
         opts["writethumbnail"] = True
+
     return opts
 
 
@@ -190,33 +182,21 @@ def _is_spotify(url: str) -> bool:
     return "spotify.com" in url.lower()
 
 
-# spotdl lives inside the venv — never rely on PATH
-SPOTDL_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "venv", "bin", "spotdl")
+SPOTDL_BIN = os.path.join(BOT_DIR, "venv", "bin", "spotdl")
 
 
 def _spotify_download_sync(url: str) -> str:
-    """
-    Download via spotdl — fetches metadata from Spotify, audio from YouTube Music.
-    No DRM involved.
-
-    Uses the absolute venv path so it works regardless of the calling user's PATH.
-    """
-    # Prefer venv binary; fall back to system spotdl if venv path missing
     spotdl_cmd = SPOTDL_BIN if os.path.isfile(SPOTDL_BIN) else "spotdl"
-
     result = subprocess.run(
-        [
-            spotdl_cmd, "download", url,
-            "--output", DOWNLOADS_DIR,
-            "--format", "mp3",
-            "--bitrate", "192k",
-            "--no-cache",
-        ],
+        [spotdl_cmd, "download", url,
+         "--output", DOWNLOADS_DIR,
+         "--format", "mp3",
+         "--bitrate", "192k",
+         "--no-cache"],
         capture_output=True, text=True, timeout=300,
     )
     if result.returncode != 0:
         raise RuntimeError(f"spotdl error:\n{(result.stderr or result.stdout)[:400]}")
-
     mp3s = sorted(
         [os.path.join(DOWNLOADS_DIR, f) for f in os.listdir(DOWNLOADS_DIR) if f.endswith(".mp3")],
         key=os.path.getmtime, reverse=True,
@@ -228,58 +208,19 @@ def _spotify_download_sync(url: str) -> str:
 
 def _ydl_download_sync(url: str, quality: str) -> str:
     """
-    5-tier cookieless fallback chain for YouTube / Instagram / Twitter / etc.
-
-    Tier order (2025):
-    1. ANDROID_EMBEDDED — uses the Android embedded-player API key, completely
-       bypasses the "Sign in to confirm you're not a bot" gate. Most reliable.
-    2. ANDROID_MUSIC    — YouTube Music Android client, different signing key,
-       good second option for music/audio content.
-    3. TV_EMBEDDED      — TV/embed endpoint, no user session required, handles
-       age-restricted public videos without cookies.
-    4. MWEB             — mobile-web endpoint, separate auth path from desktop.
-    5. IOS + graphql    — iOS signing key + Instagram GraphQL as last resort.
-
-    Note: 'web' and plain 'android' are intentionally excluded — they are the
-    first to be fingerprinted and blocked by YouTube's bot-detection system.
+    Download using bgutil PO Token provider.
+    Falls back through Instagram-specific UA if needed.
     """
     is_instagram = "instagram.com" in url.lower()
     ua = _INSTA_UA if is_instagram else _CHROME_UA
 
-    tiers = [
-        # Tier 1: most reliable bypass for bot-check gate (2025)
-        ("android_embedded", {
-            "youtube": {"player_client": ["android_embedded"]},
-        }),
-        # Tier 2: YouTube Music client, different API key
-        ("android_music", {
-            "youtube": {"player_client": ["android_music"]},
-        }),
-        # Tier 3: TV embed, no auth needed, handles age-restricted
-        ("tv_embedded", {
-            "youtube": {"player_client": ["tv_embedded"]},
-        }),
-        # Tier 4: mobile web, separate bot-check path
-        ("mweb", {
-            "youtube": {"player_client": ["mweb"]},
-        }),
-        # Tier 5: iOS key + Instagram GraphQL fallback
-        ("ios", {
-            "youtube":   {"player_client": ["ios"]},
-            "instagram": {"api": ["graphql"]},
-        }),
-    ]
+    extra = {"instagram": {"api": ["graphql"]}} if is_instagram else {}
 
-    last_err: Exception = RuntimeError("All download tiers failed.")
-    for name, args in tiers:
-        try:
-            logger.info("Trying tier: %s", name)
-            return _run_ydl(_make_opts(quality, args, ua=ua), url)
-        except Exception as e:
-            logger.warning("Tier %s failed: %s", name, e)
-            last_err = e
-
-    raise last_err
+    try:
+        return _run_ydl(_make_opts(quality, extra, ua=ua), url)
+    except Exception as e:
+        logger.error("Download failed: %s", e)
+        raise
 
 
 def _download_sync(url: str, quality: str) -> str:
@@ -300,19 +241,15 @@ def _upload_sync(file_path: str, user_id: int) -> str | None:
     cred_file = os.path.join(CREDS_DIR, f"{user_id}.json")
     if not os.path.exists(cred_file):
         return None
-
     creds = service_account.Credentials.from_service_account_file(
         cred_file, scopes=["https://www.googleapis.com/auth/drive.file"]
     )
     service = build("drive", "v3", credentials=creds)
     mime, _ = mimetypes.guess_type(file_path)
     mime = mime or "application/octet-stream"
-
     req = service.files().create(
         body={"name": os.path.basename(file_path), "parents": [DEFAULT_DRIVE_FOLDER_ID]},
-        media_body=MediaFileUpload(
-            file_path, mimetype=mime, resumable=True, chunksize=8 * 1024 * 1024
-        ),
+        media_body=MediaFileUpload(file_path, mimetype=mime, resumable=True, chunksize=8 * 1024 * 1024),
         fields="id,webViewLink",
     )
     try:
@@ -324,10 +261,7 @@ def _upload_sync(file_path: str, user_id: int) -> str | None:
         return resp.get("webViewLink")
     except HttpError as e:
         if "storageQuotaExceeded" in str(e):
-            raise RuntimeError(
-                "❌ Drive quota exceeded.\n"
-                "Make sure the folder is shared with the Service Account (Editor)."
-            )
+            raise RuntimeError("Drive quota exceeded. Make sure the folder is shared with the Service Account.")
         raise
 
 
@@ -362,7 +296,7 @@ ABOUT_TEXT = (
     "✦ Spotify \\(DRM\\-free via spotdl\\)\n"
     "✦ Quality: 360p → 1080p and MP3\n"
     "✦ Upload up to 2GB to personal Google Drive\n"
-    "✦ Multi\\-user with isolated credentials\n\n"
+    "✦ YouTube via bgutil PO Token \\(no IP blocks\\)\n\n"
     "━━━━━━━━━━━━━━━━━━━━━━━━\n"
     "👨‍💻 *develop by* [Saeed Eramy](https://github.com/saeederamy)\n"
     "📦 [black\\-telbot](https://github.com/saeederamy/black-telbot)\n\n"
@@ -413,11 +347,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         user_states[uid] = None
 
         if text == BTN_ABOUT:
-            await update.message.reply_text(
-                ABOUT_TEXT,
-                parse_mode="MarkdownV2",
-                disable_web_page_preview=True,
-            )
+            await update.message.reply_text(ABOUT_TEXT, parse_mode="MarkdownV2", disable_web_page_preview=True)
 
         elif text == BTN_DL:
             user_states[uid] = "WAIT_URL"
@@ -428,28 +358,24 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         elif text == BTN_UL:
             if not DRIVE_ENABLED:
-                await update.message.reply_text("⚠️ Drive is not configured on this bot.")
+                await update.message.reply_text("Drive is not configured on this bot.")
                 return
             if not os.path.exists(os.path.join(CREDS_DIR, f"{uid}.json")):
                 await update.message.reply_text(
-                    "⚠️ No credentials found\\.\n"
-                    "Use 🔑 *Drive Setup* first to upload your `credentials\\.json`\\.",
+                    "No credentials found\\. Use 🔑 *Drive Setup* first\\.",
                     parse_mode="MarkdownV2",
                 )
             else:
                 user_states[uid] = "WAIT_FILE"
-                await update.message.reply_text(
-                    "📁 Send your file \\(up to 2 GB\\):",
-                    parse_mode="MarkdownV2",
-                )
+                await update.message.reply_text("Send your file \\(up to 2 GB\\):", parse_mode="MarkdownV2")
 
         elif text == BTN_SETUP:
             if not DRIVE_ENABLED:
-                await update.message.reply_text("⚠️ Drive is not configured on this bot.")
+                await update.message.reply_text("Drive is not configured on this bot.")
                 return
             user_states[uid] = "WAIT_JSON"
             await update.message.reply_text(
-                "📎 Send your `credentials\\.json` file from Google Cloud Console\\.",
+                "Send your `credentials\\.json` from Google Cloud Console\\.",
                 parse_mode="MarkdownV2",
             )
         return
@@ -458,46 +384,36 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         f = await update.message.document.get_file()
         await f.download_to_drive(os.path.join(CREDS_DIR, f"{uid}.json"))
         user_states[uid] = None
-        await update.message.reply_text(
-            "✅ Credentials saved\\! You can now upload files to Drive\\.",
-            parse_mode="MarkdownV2",
-        )
+        await update.message.reply_text("Credentials saved\\!", parse_mode="MarkdownV2")
         return
 
     if state == "WAIT_URL" and text:
         user_urls[uid] = text
         is_spotify = _is_spotify(text)
-        header = "🎵 *Spotify detected — choose format:*" if is_spotify else "📉 *Choose quality:*"
-        await update.message.reply_text(
-            header,
-            reply_markup=quality_keyboard(is_spotify),
-            parse_mode="MarkdownV2",
-        )
+        header = "🎵 *Spotify detected:*" if is_spotify else "📉 *Choose quality:*"
+        await update.message.reply_text(header, reply_markup=quality_keyboard(is_spotify), parse_mode="MarkdownV2")
         return
 
     if state == "WAIT_FILE":
         attachment = update.message.document or update.message.video or update.message.audio
         if not attachment:
-            await update.message.reply_text("⚠️ Please send a file\\.", parse_mode="MarkdownV2")
+            await update.message.reply_text("Please send a file\\.", parse_mode="MarkdownV2")
             return
 
-        msg  = await update.message.reply_text("⏳ Receiving file…")
+        msg  = await update.message.reply_text("Receiving file...")
         name = getattr(attachment, "file_name", None) or "uploaded_file"
         path = os.path.join(DOWNLOADS_DIR, name)
         try:
             tg_file = await attachment.get_file()
             await tg_file.download_to_drive(path)
-            await msg.edit_text("☁️ Uploading to Drive…")
+            await msg.edit_text("Uploading to Drive...")
             link = await upload_to_drive(path, uid)
-            await msg.edit_text(
-                f"✅ Upload complete\\!\n🔗 {link}" if link
-                else "❌ Upload failed\\. Check credentials and Folder ID\\.",
-            )
+            await msg.edit_text(f"Upload complete\\!\n{link}" if link else "Upload failed\\.")
         except RuntimeError as e:
             await msg.edit_text(str(e))
         except Exception as e:
             logger.exception("Upload error")
-            await msg.edit_text(f"❌ Error:\n{str(e)[:400]}")
+            await msg.edit_text(f"Error:\n{str(e)[:400]}")
         finally:
             if os.path.exists(path):
                 os.remove(path)
@@ -512,17 +428,16 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     url     = user_urls.get(uid)
 
     if not url:
-        await query.edit_message_text("⚠️ Session expired. Please send the link again.")
+        await query.edit_message_text("Session expired. Please send the link again.")
         return
 
     label = "Spotify MP3" if _is_spotify(url) else quality.upper()
-    await query.edit_message_text(f"⏳ Downloading ({label})…")
+    await query.edit_message_text(f"Downloading ({label})...")
 
     path = None
     try:
         path = await download_media(url, quality)
-        await query.edit_message_text("📤 Sending to Telegram…")
-
+        await query.edit_message_text("Sending to Telegram...")
         with open(path, "rb") as f:
             if quality == "mp3" or path.endswith(".mp3"):
                 await context.bot.send_audio(chat_id=uid, audio=f)
@@ -536,8 +451,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     except Exception as e:
         err = str(e)
         logger.error("Download error: %s", err)
-        # Show raw error for diagnosis
-        hint = f"❌ Download failed:\n`{err[:400]}`"
+        hint = f"Download failed:\n`{err[:400]}`"
         await query.edit_message_text(hint, parse_mode="Markdown")
 
     finally:
