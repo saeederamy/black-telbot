@@ -145,11 +145,24 @@ def _spotify_download_sync(url: str) -> str:
     return mp3s[0]
 
 
+# Warp proxy (HTTP inbound in 3x-ui routed to warp outbound)
+WARP_PROXY = "http://127.0.0.1:1088"
+
+# Cookies file (optional but recommended for authenticated sessions)
+COOKIES_FILE = os.path.join(BOT_DIR, "cookies.txt")
+
+
 def _ydl_download_sync(url: str, quality: str) -> str:
     """
     Call yt-dlp binary directly via subprocess.
-    This is necessary because js_runtimes and remote_components are CLI-only
-    options that do not have a stable Python API equivalent.
+
+    Key flags that make YouTube work:
+    - --proxy warp          : routes API requests through Cloudflare IP (no bot-check)
+    - --cn/geo-verification-proxy : same proxy for region checks
+    - --no-check-formats    : skip format probe (avoids extra 403s through proxy)
+    - --js-runtimes node    : Node.js solves JS challenges
+    - --remote-components   : downloads challenge solver from GitHub
+    - youtubepot-bgutilhttp : bgutil server provides GVS PO Token
     """
     fmt = QUALITY_MAP[quality]
     is_instagram = "instagram.com" in url.lower()
@@ -161,6 +174,10 @@ def _ydl_download_sync(url: str, quality: str) -> str:
         "--no-playlist",
         "--no-check-certificate",
         "--concurrent-fragments", "4",
+        "--proxy",                  WARP_PROXY,
+        "--cn-verification-proxy",  WARP_PROXY,
+        "--geo-verification-proxy", WARP_PROXY,
+        "--no-check-formats",
         "--js-runtimes", "node",
         "--remote-components", "ejs:github",
         "--extractor-args", "youtube:player_client=web",
@@ -168,6 +185,10 @@ def _ydl_download_sync(url: str, quality: str) -> str:
         "--extractor-args", f"youtubepot-bgutilscript:server_home={BGUTIL_SERVER_HOME}",
         "--user-agent", _INSTA_UA if is_instagram else _CHROME_UA,
     ]
+
+    # Add cookies if available
+    if os.path.isfile(COOKIES_FILE):
+        cmd += ["--cookies", COOKIES_FILE]
 
     if is_instagram:
         cmd += ["--extractor-args", "instagram:api=graphql"]
