@@ -116,72 +116,11 @@ QUALITY_MAP = {
 }
 
 
-def _make_opts(quality: str, extra_extractor_args: dict | None = None, ua: str = _CHROME_UA) -> dict:
-    """
-    Build yt-dlp options with bgutil PO Token provider.
-
-    Key settings that make YouTube work on datacenter IPs:
-    - player_client=web        : web client triggers GVS PO Token requirement
-    - youtubepot-bgutilhttp    : bgutil HTTP server provides the PO Token
-    - js_runtimes=node         : Node.js solves JS challenges
-    - remote_components=ejs:github : downloads challenge solver from GitHub
-    """
-    extractor_args = {
-        "youtube":                 {"player_client": ["web"]},
-        "youtubepot-bgutilhttp":   {"base_url": [BGUTIL_SERVER]},
-        "youtubepot-bgutilscript": {"server_home": [BGUTIL_SERVER_HOME]},
-    }
-    if extra_extractor_args:
-        for k, v in extra_extractor_args.items():
-            extractor_args.setdefault(k, {}).update(v)
-
-    opts: dict = {
-        "format":                        QUALITY_MAP[quality],
-        "outtmpl":                       os.path.join(DOWNLOADS_DIR, "%(title).80s.%(ext)s"),
-        "merge_output_format":           "mp4" if quality != "mp3" else None,
-        "quiet":                         True,
-        "no_warnings":                   True,
-        "noplaylist":                    True,
-        "nocheckcertificate":            True,
-        "concurrent_fragment_downloads": 4,
-        "extractor_args":                extractor_args,
-        "js_runtimes":                   ["node"],
-        "remote_components":             ["ejs:github"],
-        "http_headers": {
-            "User-Agent":      ua,
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept":          "text/html,application/xhtml+xml,*/*;q=0.8",
-        },
-    }
-
-    if quality == "mp3":
-        opts["postprocessors"] = [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            },
-            {"key": "EmbedThumbnail"},
-            {"key": "FFmpegMetadata"},
-        ]
-        opts["writethumbnail"] = True
-
-    return opts
-
-
-def _run_ydl(opts: dict, url: str) -> str:
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        path = ydl.prepare_filename(info)
-        if opts.get("postprocessors"):
-            path = path.rsplit(".", 1)[0] + ".mp3"
-        return path
-
-
 def _is_spotify(url: str) -> bool:
     return "spotify.com" in url.lower()
 
 
+YTDLP_BIN  = os.path.join(BOT_DIR, "venv", "bin", "yt-dlp")
 SPOTDL_BIN = os.path.join(BOT_DIR, "venv", "bin", "spotdl")
 
 
@@ -208,19 +147,57 @@ def _spotify_download_sync(url: str) -> str:
 
 def _ydl_download_sync(url: str, quality: str) -> str:
     """
-    Download using bgutil PO Token provider.
-    Falls back through Instagram-specific UA if needed.
+    Call yt-dlp binary directly via subprocess.
+    This is necessary because js_runtimes and remote_components are CLI-only
+    options that do not have a stable Python API equivalent.
     """
+    fmt = QUALITY_MAP[quality]
     is_instagram = "instagram.com" in url.lower()
-    ua = _INSTA_UA if is_instagram else _CHROME_UA
 
-    extra = {"instagram": {"api": ["graphql"]}} if is_instagram else {}
+    cmd = [
+        YTDLP_BIN if os.path.isfile(YTDLP_BIN) else "yt-dlp",
+        "--format", fmt,
+        "--output", os.path.join(DOWNLOADS_DIR, "%(title).80s.%(ext)s"),
+        "--no-playlist",
+        "--no-check-certificate",
+        "--concurrent-fragments", "4",
+        "--js-runtimes", "node",
+        "--remote-components", "ejs:github",
+        "--extractor-args", "youtube:player_client=web",
+        "--extractor-args", f"youtubepot-bgutilhttp:base_url={BGUTIL_SERVER}",
+        "--extractor-args", f"youtubepot-bgutilscript:server_home={BGUTIL_SERVER_HOME}",
+        "--user-agent", _INSTA_UA if is_instagram else _CHROME_UA,
+    ]
 
-    try:
-        return _run_ydl(_make_opts(quality, extra, ua=ua), url)
-    except Exception as e:
-        logger.error("Download failed: %s", e)
-        raise
+    if is_instagram:
+        cmd += ["--extractor-args", "instagram:api=graphql"]
+
+    if quality != "mp3":
+        cmd += ["--merge-output-format", "mp4"]
+    else:
+        cmd += [
+            "--extract-audio",
+            "--audio-format", "mp3",
+            "--audio-quality", "192K",
+            "--embed-thumbnail",
+            "--add-metadata",
+        ]
+
+    cmd.append(url)
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip())
+
+    # Find the newest file in downloads dir
+    files = sorted(
+        [os.path.join(DOWNLOADS_DIR, f) for f in os.listdir(DOWNLOADS_DIR)],
+        key=os.path.getmtime, reverse=True,
+    )
+    if not files:
+        raise RuntimeError("Download finished but no file found.")
+    return files[0]
 
 
 def _download_sync(url: str, quality: str) -> str:
