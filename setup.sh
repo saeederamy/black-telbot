@@ -124,7 +124,7 @@ patch()       { sed -i "s|$2|$3|g" "$1"; }
 install_packages() {
     section "System packages"
     sudo apt-get update -qq
-    sudo apt-get install -y -qq python3 python3-pip python3-venv ffmpeg wget curl nano
+    sudo apt-get install -y -qq python3 python3-pip python3-venv ffmpeg wget curl nano git tar
     ok "Done."
 }
 
@@ -136,11 +136,106 @@ setup_venv() {
     "$PIP" install -q \
         "python-telegram-bot>=20.0" \
         yt-dlp \
+        bgutil-ytdlp-pot-provider \
         spotdl \
         google-api-python-client \
         google-auth-httplib2 \
         google-auth-oauthlib
     ok "Done."
+}
+
+install_nodejs() {
+    if command -v node &>/dev/null; then
+        ok "Node.js $(node -v)"
+        return 0
+    fi
+    info "Installing Node.js 20..."
+    sudo apt-get install -y -qq curl
+    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - &>/dev/null
+    sudo apt-get install -y -qq nodejs
+    command -v node &>/dev/null && ok "Node.js $(node -v)" \
+        || { err "Node.js install failed."; return 1; }
+}
+
+# ──────────────────────────────────────────────────────────────
+# bgutil PO Token provider  (HTTP server on :4416)
+# ──────────────────────────────────────────────────────────────
+# YouTube blocks datacenter / server IPs with a "Sign in to confirm
+# you're not a bot" challenge. The fix is a Proof-of-Origin token,
+# served locally by the bgutil provider running as a small Node
+# HTTP server. main_bot.py + the bgutil-ytdlp-pot-provider yt-dlp
+# plugin fetch the token from it automatically. No Google account,
+# no VPN, no proxy needed.
+BGUTIL_REPO="https://github.com/Brainicism/bgutil-ytdlp-pot-provider"
+BGUTIL_DIR="$BOT_DIR/bgutil-pot"
+BGUTIL_SERVICE="bgutil-pot.service"
+
+setup_bgutil_pot() {
+    install_nodejs || return 1
+
+    section "bgutil PO Token provider"
+    rm -rf "$BGUTIL_DIR"
+    if ! git clone --depth 1 "$BGUTIL_REPO" "$BGUTIL_DIR" 2>/dev/null; then
+        info "git clone failed — trying tarball download..."
+        mkdir -p "$BGUTIL_DIR"
+        if ! wget -qO- "$BGUTIL_REPO/archive/refs/heads/master.tar.gz" \
+                | tar xz -C "$BGUTIL_DIR" --strip-components=1 2>/dev/null; then
+            err "Could not download bgutil provider (GitHub may be filtered)."
+            info "YouTube will fall back to cookies — use option [6]."
+            return 1
+        fi
+    fi
+
+    if [[ ! -d "$BGUTIL_DIR/server" ]]; then
+        err "Unexpected bgutil layout — 'server/' not found."
+        return 1
+    fi
+
+    info "Building provider server (npm install + tsc)..."
+    ( cd "$BGUTIL_DIR/server" && npm install --silent 2>/dev/null && npx tsc 2>/dev/null )
+
+    if [[ ! -f "$BGUTIL_DIR/server/build/main.js" ]]; then
+        err "Build failed — $BGUTIL_DIR/server/build/main.js missing."
+        return 1
+    fi
+    ok "Provider built."
+
+    info "Installing yt-dlp PO Token plugin into venv..."
+    "$PIP" install -q --upgrade bgutil-ytdlp-pot-provider
+    ok "Plugin installed."
+
+    local NODE_BIN
+    NODE_BIN="$(command -v node)"
+    sudo tee "/etc/systemd/system/$BGUTIL_SERVICE" > /dev/null <<EOF
+[Unit]
+Description=bgutil PO Token provider (Black Telbot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=$BGUTIL_DIR/server
+ExecStart=$NODE_BIN $BGUTIL_DIR/server/build/main.js
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    sudo systemctl daemon-reload
+    sudo systemctl enable "$BGUTIL_SERVICE" --quiet
+    sudo systemctl restart "$BGUTIL_SERVICE"
+    sleep 3
+
+    if curl -s -m 4 http://127.0.0.1:4416/ping | grep -q version; then
+        ok "PO Token server is running on :4416."
+        return 0
+    fi
+    warn "PO Token server did not respond. Check: journalctl -u $BGUTIL_SERVICE"
+    return 1
 }
 
 download_bot() {
@@ -248,130 +343,43 @@ action_drive_disable() {
 
 
 # ──────────────────────────────────────────────────────────────
-# YOUTUBE AUTH  (PO Token + cookies fallback)
+# YOUTUBE AUTH  (PO Token provider + cookies fallback)
 # ──────────────────────────────────────────────────────────────
 #
 # Why this is needed:
-#   YouTube detects datacenter IPs and forces a "Sign in to confirm
+#   YouTube blocks datacenter / server IPs with a "Sign in to confirm
 #   you're not a bot" challenge. Two solutions work without a VPN:
 #
-#   1. PO Token (preferred) — a visitor token extracted from a real
-#      browser session. No account or login required. Generated once
-#      via bgutil-ytdlp-pot-provider (runs as a local Node.js server).
-#      Valid for ~24–48 hours; re-run this option to refresh.
+#   1. PO Token provider (preferred) — a small local Node HTTP server
+#      (bgutil-ytdlp-pot-provider) that mints Proof-of-Origin tokens
+#      on demand. Runs as bgutil-pot.service; the matching yt-dlp
+#      plugin fetches tokens automatically. No Google account, set
+#      up once, refreshes itself.
 #
 #   2. cookies.txt (fallback) — export your YouTube cookies from a
-#      browser where you are logged in. More stable but requires a
-#      Google account. Use the yt-dlp browser extension to export.
+#      browser where you are logged in. Requires a Google account.
 #
-# The bot uses PO Token first; if po_token.txt is absent it tries
-# cookies.txt; if neither exists it tries unauthenticated (may fail).
+# main_bot.py uses the PO Token server first and falls back to
+# cookies.txt automatically when present.
 # ──────────────────────────────────────────────────────────────
 
 action_yt_po_token() {
     banner
-    echo -e "${BOLD}  ── YouTube PO Token Setup ──${R}\n"
-    echo -e "  Generates a Proof-of-Origin token from a real browser fingerprint."
-    echo -e "  No Google account needed. Expires every ~24-48h.\n"
+    echo -e "${BOLD}  ── YouTube PO Token Provider ──${R}\n"
+    echo -e "  Installs a local token server so YouTube works from a server IP."
+    echo -e "  No Google account, no proxy, no VPN. Set up once.\n"
 
     if [[ ! -f "$BOT_DIR/main_bot.py" ]]; then
         err "Bot is not installed yet."; press_enter; show_menu; return
     fi
 
-    # ── Node.js ────────────────────────────────────────────────
-    if ! command -v node &>/dev/null; then
-        info "Installing Node.js 20..."
-        sudo apt-get install -y -qq curl
-        curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - &>/dev/null
-        sudo apt-get install -y -qq nodejs
+    if setup_bgutil_pot; then
+        sudo systemctl restart "$SERVICE" 2>/dev/null || true
+        sleep 1
+        ok "Bot restarted — YouTube downloads should work now."
+    else
+        warn "PO Token provider not active. Use option [6] (cookies) instead."
     fi
-    ok "Node.js $(node -v)"
-
-    # ── bgutil-ytdlp-pot-provider ──────────────────────────────
-    # Uses wget instead of git clone — works on filtered servers.
-    BGUTIL_DIR="$BOT_DIR/bgutil-pot"
-    mkdir -p "$BGUTIL_DIR"
-
-    local BASE_RAW="https://raw.githubusercontent.com/nicholasstephan/bgutil-ytdlp-pot-provider/main"
-
-    info "Downloading bgutil files via wget..."
-    for file in package.json index.js generate.js getPoToken.js; do
-        wget -q -O "$BGUTIL_DIR/$file" "$BASE_RAW/$file" 2>/dev/null
-        # Remove empty/404 files
-        [[ -s "$BGUTIL_DIR/$file" ]] && ok "  $file" || rm -f "$BGUTIL_DIR/$file"
-    done
-
-    if [[ ! -f "$BGUTIL_DIR/package.json" ]]; then
-        err "Could not download package.json."
-        info "GitHub raw.githubusercontent.com may be filtered on this server."
-        info "Alternative: use option [6] to set up cookies instead."
-        press_enter; show_menu; return
-    fi
-
-    info "Installing npm dependencies..."
-    cd "$BGUTIL_DIR" && npm install --silent 2>/dev/null
-    ok "npm install done."
-
-    # ── Find the entry-point script ────────────────────────────
-    local entry_script=""
-    for candidate in getPoToken.js generate.js index.js; do
-        [[ -f "$BGUTIL_DIR/$candidate" ]] && { entry_script="$BGUTIL_DIR/$candidate"; break; }
-    done
-
-    if [[ -z "$entry_script" ]]; then
-        err "No entry script found. Downloaded files: $(ls "$BGUTIL_DIR" 2>/dev/null)"
-        press_enter; show_menu; return
-    fi
-    info "Using: $entry_script"
-
-    # ── Generate token ─────────────────────────────────────────
-    info "Generating PO Token (~10 seconds)..."
-    cd "$BGUTIL_DIR"
-    local output
-    output=$(node "$entry_script" 2>&1)
-    local exit_code=$?
-
-    if [[ $exit_code -ne 0 ]]; then
-        err "Generation failed (exit $exit_code):"
-        echo "$output" | tail -20
-        press_enter; show_menu; return
-    fi
-
-    # ── Parse output ───────────────────────────────────────────
-    # Supports both JSON output and "key: value" line format
-    local visitor_data po_token
-
-    # Try JSON first: {"visitorData":"...","poToken":"..."}
-    if echo "$output" | grep -q '{'; then
-        visitor_data=$(echo "$output" | grep -oP '"visitorData"\s*:\s*"\K[^"]+' | head -1)
-        po_token=$(    echo "$output" | grep -oP '"poToken"\s*:\s*"\K[^"]+' | head -1)
-    fi
-
-    # Fall back to "key: value" lines
-    if [[ -z "$visitor_data" ]]; then
-        visitor_data=$(echo "$output" | grep -i "visitor" | grep -oP '(?<=:\s)\S+' | head -1)
-    fi
-    if [[ -z "$po_token" ]]; then
-        po_token=$(echo "$output" | grep -i "potoken\|po_token" | grep -oP '(?<=:\s)\S+' | head -1)
-    fi
-
-    if [[ -z "$visitor_data" || -z "$po_token" ]]; then
-        err "Could not parse token from output:"
-        echo "$output" | tail -20
-        info "Try option [6] (cookies) as an alternative."
-        press_enter; show_menu; return
-    fi
-
-    # ── Save ───────────────────────────────────────────────────
-    printf "%s\n%s\n" "$visitor_data" "$po_token" > "$BOT_DIR/po_token.txt"
-    ok "Saved to $BOT_DIR/po_token.txt"
-    info "  visitor_data : ${visitor_data:0:40}..."
-    info "  po_token     : ${po_token:0:40}..."
-
-    sudo systemctl restart "$SERVICE" 2>/dev/null || true
-    sleep 1
-    ok "Bot restarted — YouTube should work now."
-    info "Re-run this option every 24-48h to refresh the token."
     press_enter; show_menu
 }
 
@@ -426,6 +434,9 @@ action_install_standard() {
     patch "$BOT_DIR/main_bot.py" "YOUR_BOT_TOKEN_HERE" "$BOT_TOKEN"
     create_service
 
+    setup_bgutil_pot || warn "YouTube PO Token setup incomplete — retry with option [5]."
+    sudo systemctl restart "$SERVICE" 2>/dev/null || true
+
     echo
     ok "Installation complete! Bot is live."
     echo
@@ -469,6 +480,9 @@ action_install_heavy() {
     patch "$BOT_DIR/main_bot.py" "USE_LOCAL_API = False" "USE_LOCAL_API = True"
     create_service
 
+    setup_bgutil_pot || warn "YouTube PO Token setup incomplete — retry with option [5]."
+    sudo systemctl restart "$SERVICE" 2>/dev/null || true
+
     echo
     ok "Heavy install complete — 2 GB limit is active."
     echo
@@ -503,9 +517,13 @@ action_update() {
     [[ "$local_api" == "True" ]] && \
         patch "$BOT_DIR/main_bot.py" "USE_LOCAL_API = False" "USE_LOCAL_API = True"
 
-    info "Updating yt-dlp and spotdl..."
-    "$PIP" install -q --upgrade yt-dlp spotdl
-    ok "yt-dlp and spotdl updated."
+    info "Updating yt-dlp, PO Token plugin and spotdl..."
+    "$PIP" install -q --upgrade yt-dlp bgutil-ytdlp-pot-provider spotdl
+    ok "yt-dlp, plugin and spotdl updated."
+
+    if [[ -f "/etc/systemd/system/$BGUTIL_SERVICE" ]]; then
+        sudo systemctl restart "$BGUTIL_SERVICE" 2>/dev/null || true
+    fi
 
     sudo systemctl restart "$SERVICE"
     sleep 1
@@ -533,6 +551,9 @@ action_wipe() {
     sudo systemctl stop    "$SERVICE" 2>/dev/null || true
     sudo systemctl disable "$SERVICE" 2>/dev/null || true
     sudo rm -f "/etc/systemd/system/$SERVICE"
+    sudo systemctl stop    "$BGUTIL_SERVICE" 2>/dev/null || true
+    sudo systemctl disable "$BGUTIL_SERVICE" 2>/dev/null || true
+    sudo rm -f "/etc/systemd/system/$BGUTIL_SERVICE"
     sudo systemctl daemon-reload
     sudo docker stop  telegram-bot-api 2>/dev/null || true
     sudo docker rm    telegram-bot-api 2>/dev/null || true

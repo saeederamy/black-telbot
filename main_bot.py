@@ -51,7 +51,12 @@ DEFAULT_DRIVE_FOLDER_ID = "DRIVE_FOLDER_DISABLED"
 
 # bgutil PO Token server (systemd: bgutil-pot.service)
 BGUTIL_SERVER      = "http://127.0.0.1:4416"
-BGUTIL_SERVER_HOME = os.path.join(BOT_DIR, "bgutil-server")
+BGUTIL_SERVER_HOME = os.path.join(BOT_DIR, "bgutil-pot", "server")
+
+# Optional outbound proxy for yt-dlp (e.g. "http://127.0.0.1:1088").
+# Leave empty to connect directly. Only set this if a proxy is actually
+# running — pointing at a dead proxy makes every download fail.
+YTDLP_PROXY = ""
 
 os.makedirs(CREDS_DIR,     exist_ok=True)
 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
@@ -85,11 +90,6 @@ def build_menu() -> ReplyKeyboardMarkup:
 # DOWNLOAD ENGINE
 # ══════════════════════════════════════════════════════════════
 
-_CHROME_UA = (
-    "Mozilla/5.0 (Linux; Android 14; Pixel 8) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/125.0.0.0 Mobile Safari/537.36"
-)
 _INSTA_UA = (
     "Instagram 319.0.0.45.109 Android (33/13; 420dpi; 1080x2400; "
     "Google/google; Pixel 7; oriole; oriole; en_US; 561394846)"
@@ -145,9 +145,6 @@ def _spotify_download_sync(url: str) -> str:
     return mp3s[0]
 
 
-# Warp proxy (HTTP inbound in 3x-ui routed to warp outbound)
-WARP_PROXY = "http://127.0.0.1:1088"
-
 # Cookies file (optional but recommended for authenticated sessions)
 COOKIES_FILE = os.path.join(BOT_DIR, "cookies.txt")
 
@@ -156,13 +153,18 @@ def _ydl_download_sync(url: str, quality: str) -> str:
     """
     Call yt-dlp binary directly via subprocess.
 
-    Key flags that make YouTube work:
-    - --proxy warp          : routes API requests through Cloudflare IP (no bot-check)
-    - --cn/geo-verification-proxy : same proxy for region checks
-    - --no-check-formats    : skip format probe (avoids extra 403s through proxy)
-    - --js-runtimes node    : Node.js solves JS challenges
-    - --remote-components   : downloads challenge solver from GitHub
-    - youtubepot-bgutilhttp : bgutil server provides GVS PO Token
+    What makes YouTube work from a datacenter/server IP (no VPN):
+    - --js-runtimes node          : Node.js runtime for the challenge solver
+    - --remote-components ejs:github : fetches the EJS signature / n-sig solver
+    - player_client=web,tv        : clients that accept a GVS PO Token
+    - youtubepot-bgutilhttp       : local bgutil server provides the PO Token
+                                    (needs bgutil-pot.service + the
+                                     bgutil-ytdlp-pot-provider yt-dlp plugin)
+    - cookies.txt                 : optional logged-in fallback
+
+    NOTE: no proxy is used by default. Routing through a proxy that is not
+    actually running makes every request fail with "connection refused".
+    Set YTDLP_PROXY only if you really have a proxy listening.
     """
     fmt = QUALITY_MAP[quality]
     is_instagram = "instagram.com" in url.lower()
@@ -174,24 +176,23 @@ def _ydl_download_sync(url: str, quality: str) -> str:
         "--no-playlist",
         "--no-check-certificate",
         "--concurrent-fragments", "4",
-        "--proxy",                  WARP_PROXY,
-        "--cn-verification-proxy",  WARP_PROXY,
-        "--geo-verification-proxy", WARP_PROXY,
-        "--no-check-formats",
         "--js-runtimes", "node",
         "--remote-components", "ejs:github",
-        "--extractor-args", "youtube:player_client=web",
+        "--extractor-args", "youtube:player_client=web,tv",
         "--extractor-args", f"youtubepot-bgutilhttp:base_url={BGUTIL_SERVER}",
         "--extractor-args", f"youtubepot-bgutilscript:server_home={BGUTIL_SERVER_HOME}",
-        "--user-agent", _INSTA_UA if is_instagram else _CHROME_UA,
     ]
+
+    if YTDLP_PROXY:
+        cmd += ["--proxy", YTDLP_PROXY, "--geo-verification-proxy", YTDLP_PROXY]
 
     # Add cookies if available
     if os.path.isfile(COOKIES_FILE):
         cmd += ["--cookies", COOKIES_FILE]
 
     if is_instagram:
-        cmd += ["--extractor-args", "instagram:api=graphql"]
+        cmd += ["--user-agent", _INSTA_UA,
+                "--extractor-args", "instagram:api=graphql"]
 
     if quality != "mp3":
         cmd += ["--merge-output-format", "mp4"]
