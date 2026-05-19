@@ -123,16 +123,45 @@ def _is_spotify(url: str) -> bool:
 YTDLP_BIN  = os.path.join(BOT_DIR, "venv", "bin", "yt-dlp")
 SPOTDL_BIN = os.path.join(BOT_DIR, "venv", "bin", "spotdl")
 
+# Cookies file (optional but recommended for authenticated sessions)
+COOKIES_FILE = os.path.join(BOT_DIR, "cookies.txt")
+
+
+def _yt_engine_args() -> list[str]:
+    """
+    Shared yt-dlp args that make YouTube work from a datacenter/server IP.
+
+    Used both for direct yt-dlp downloads and, joined into a string, for
+    spotdl's --yt-dlp-args (spotdl pulls the audio from YouTube under the
+    hood, so it hits the exact same bot-check and needs the same fix).
+    """
+    args = [
+        "--no-check-certificate",
+        "--js-runtimes", "node",
+        "--remote-components", "ejs:github",
+        "--extractor-args", "youtube:player_client=mweb,tv_simply,web",
+        "--extractor-args", f"youtubepot-bgutilhttp:base_url={BGUTIL_SERVER}",
+        "--extractor-args", f"youtubepot-bgutilscript:server_home={BGUTIL_SERVER_HOME}",
+    ]
+    if YTDLP_PROXY:
+        args += ["--proxy", YTDLP_PROXY, "--geo-verification-proxy", YTDLP_PROXY]
+    return args
+
 
 def _spotify_download_sync(url: str) -> str:
     spotdl_cmd = SPOTDL_BIN if os.path.isfile(SPOTDL_BIN) else "spotdl"
+    cmd = [
+        spotdl_cmd, "download", url,
+        "--output", DOWNLOADS_DIR,
+        "--format", "mp3",
+        "--bitrate", "192k",
+        "--no-cache",
+        "--yt-dlp-args", " ".join(_yt_engine_args()),
+    ]
+    if os.path.isfile(COOKIES_FILE):
+        cmd += ["--cookie-file", COOKIES_FILE]
     result = subprocess.run(
-        [spotdl_cmd, "download", url,
-         "--output", DOWNLOADS_DIR,
-         "--format", "mp3",
-         "--bitrate", "192k",
-         "--no-cache"],
-        capture_output=True, text=True, timeout=300,
+        cmd, capture_output=True, text=True, timeout=600,
     )
     if result.returncode != 0:
         raise RuntimeError(f"spotdl error:\n{(result.stderr or result.stdout)[:400]}")
@@ -144,9 +173,6 @@ def _spotify_download_sync(url: str) -> str:
         raise RuntimeError("spotdl finished but no MP3 found.")
     return mp3s[0]
 
-
-# Cookies file (optional but recommended for authenticated sessions)
-COOKIES_FILE = os.path.join(BOT_DIR, "cookies.txt")
 
 
 def _ydl_download_sync(url: str, quality: str) -> str:
@@ -180,17 +206,8 @@ def _ydl_download_sync(url: str, quality: str) -> str:
         "--format", fmt,
         "--output", os.path.join(DOWNLOADS_DIR, "%(title).80s.%(ext)s"),
         "--no-playlist",
-        "--no-check-certificate",
         "--concurrent-fragments", "4",
-        "--js-runtimes", "node",
-        "--remote-components", "ejs:github",
-        "--extractor-args", "youtube:player_client=mweb,tv_simply,web",
-        "--extractor-args", f"youtubepot-bgutilhttp:base_url={BGUTIL_SERVER}",
-        "--extractor-args", f"youtubepot-bgutilscript:server_home={BGUTIL_SERVER_HOME}",
-    ]
-
-    if YTDLP_PROXY:
-        cmd += ["--proxy", YTDLP_PROXY, "--geo-verification-proxy", YTDLP_PROXY]
+    ] + _yt_engine_args()
 
     # Add cookies if available
     if os.path.isfile(COOKIES_FILE):
