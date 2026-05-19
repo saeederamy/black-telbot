@@ -521,8 +521,16 @@ action_update() {
     "$PIP" install -q --upgrade yt-dlp bgutil-ytdlp-pot-provider spotdl
     ok "yt-dlp, plugin and spotdl updated."
 
-    if [[ -f "/etc/systemd/system/$BGUTIL_SERVICE" ]]; then
+    # Self-heal: make sure the YouTube PO Token provider is installed
+    # and actually responding. If not, set it up now — this makes
+    # Update a one-step fix with no extra menu steps needed.
+    if curl -s -m 4 http://127.0.0.1:4416/ping 2>/dev/null | grep -q version; then
         sudo systemctl restart "$BGUTIL_SERVICE" 2>/dev/null || true
+        ok "YouTube PO Token server OK."
+    else
+        info "YouTube PO Token provider missing — setting it up now..."
+        setup_bgutil_pot \
+            || warn "PO Token setup incomplete — use option [6] (cookies) as fallback."
     fi
 
     sudo systemctl restart "$SERVICE"
