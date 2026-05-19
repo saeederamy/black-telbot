@@ -158,6 +158,10 @@ def _spotify_download_sync(url: str) -> str:
         "--no-cache",
         "--yt-dlp-args", " ".join(_yt_engine_args()),
     ]
+    if YTDLP_PROXY:
+        # spotdl's own --proxy also routes the Spotify metadata session
+        # (not just the YouTube audio fetch) through the VPN/proxy.
+        cmd += ["--proxy", YTDLP_PROXY]
     if os.path.isfile(COOKIES_FILE):
         cmd += ["--cookie-file", COOKIES_FILE]
     result = subprocess.run(

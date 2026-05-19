@@ -418,6 +418,75 @@ action_yt_cookies() {
 }
 
 # ──────────────────────────────────────────────────────────────
+# VPN / PROXY FOR DOWNLOADS
+# ──────────────────────────────────────────────────────────────
+# When YouTube has flagged the server IP, the only fully reliable
+# fix is to route downloads through a residential VPN/proxy. This
+# sets YTDLP_PROXY in main_bot.py; it is applied to BOTH yt-dlp
+# (YouTube) and spotdl (Spotify) downloads.
+#
+# Run your VPN so it exposes a local proxy port, then enter it here.
+#   HTTP proxy : http://127.0.0.1:8080
+#   SOCKS proxy: socks5://127.0.0.1:1080
+# Just a number is treated as http://127.0.0.1:<port>.
+# ──────────────────────────────────────────────────────────────
+action_set_proxy() {
+    banner
+    echo -e "${BOLD}  ── VPN / Proxy for downloads ──${R}\n"
+
+    if [[ ! -f "$BOT_DIR/main_bot.py" ]]; then
+        err "Bot is not installed yet."; press_enter; show_menu; return
+    fi
+
+    local current
+    current=$(grep -oP 'YTDLP_PROXY\s*=\s*"\K[^"]*' "$BOT_DIR/main_bot.py" 2>/dev/null || echo "")
+    if [[ -n "$current" ]]; then
+        echo -e "  Current: ${GREEN}$current${R}\n"
+    else
+        echo -e "  Current: ${GRAY}(none — direct connection)${R}\n"
+    fi
+    echo -e "  Examples:"
+    echo -e "  ${GRAY}  http://127.0.0.1:8080   socks5://127.0.0.1:1080   8080${R}"
+    echo -e "  ${GRAY}Enter '-' to disable the proxy.${R}\n"
+
+    local input
+    read -rp "  Proxy URL / port (blank = keep current): " input
+    [[ -z "$input" ]] && { info "Unchanged."; press_enter; show_menu; return; }
+
+    local proxy
+    if [[ "$input" == "-" ]]; then
+        proxy=""
+    elif [[ "$input" =~ ^[0-9]+$ ]]; then
+        proxy="http://127.0.0.1:$input"
+    elif [[ "$input" =~ ^(https?|socks[45]):// ]]; then
+        proxy="$input"
+    elif [[ "$input" =~ ^[^/]+:[0-9]+$ ]]; then
+        proxy="http://$input"
+    else
+        err "Unrecognized format. Use http://host:port, socks5://host:port, or a port number."
+        press_enter; show_menu; return
+    fi
+
+    if [[ "$proxy" == *"|"* || "$proxy" == *"&"* ]]; then
+        err "Proxy contains unsupported characters ( | or & )."
+        press_enter; show_menu; return
+    fi
+
+    sed -i "s|^YTDLP_PROXY = .*|YTDLP_PROXY = \"$proxy\"|" "$BOT_DIR/main_bot.py"
+
+    if [[ -n "$proxy" ]]; then
+        ok "Downloads will now go through: $proxy"
+    else
+        ok "Proxy disabled — downloads use a direct connection."
+    fi
+
+    sudo systemctl restart "$SERVICE" 2>/dev/null || true
+    sleep 1
+    ok "Bot restarted."
+    press_enter; show_menu
+}
+
+# ──────────────────────────────────────────────────────────────
 # INSTALL ACTIONS
 # ──────────────────────────────────────────────────────────────
 action_install_standard() {
@@ -501,10 +570,11 @@ action_update() {
         warn "Bot is not installed yet."; press_enter; show_menu; return
     fi
 
-    local token folder_id local_api
+    local token folder_id local_api proxy
     token=$(grep -oP 'BOT_TOKEN\s*=\s*"\K[^"]+' "$BOT_DIR/main_bot.py" 2>/dev/null || echo "")
     folder_id=$(grep -oP 'DEFAULT_DRIVE_FOLDER_ID\s*=\s*"\K[^"]+' "$BOT_DIR/main_bot.py" 2>/dev/null || echo "")
     local_api=$(grep -oP 'USE_LOCAL_API\s*=\s*\K(True|False)' "$BOT_DIR/main_bot.py" 2>/dev/null || echo "False")
+    proxy=$(grep -oP 'YTDLP_PROXY\s*=\s*"\K[^"]*' "$BOT_DIR/main_bot.py" 2>/dev/null || echo "")
 
     info "Downloading latest bot code..."
     wget -q -O "$BOT_DIR/main_bot.py" "$BOT_URL" \
@@ -516,6 +586,8 @@ action_update() {
         patch "$BOT_DIR/main_bot.py" "DRIVE_FOLDER_DISABLED" "$folder_id"
     [[ "$local_api" == "True" ]] && \
         patch "$BOT_DIR/main_bot.py" "USE_LOCAL_API = False" "USE_LOCAL_API = True"
+    [[ -n "$proxy" ]] && \
+        sed -i "s|^YTDLP_PROXY = .*|YTDLP_PROXY = \"$proxy\"|" "$BOT_DIR/main_bot.py"
 
     info "Updating yt-dlp, PO Token plugin and spotdl..."
     "$PIP" install -q --upgrade yt-dlp bgutil-ytdlp-pot-provider spotdl
@@ -583,6 +655,7 @@ show_menu() {
     echo -e "  ${BOLD}[4]${R} Live logs"
     echo -e "  ${BOLD}[5]${R} YouTube — PO Token    ${CYAN}fix bot-check${R}"
     echo -e "  ${BOLD}[6]${R} YouTube — Cookies     ${CYAN}alternative fix${R}"
+    echo -e "  ${BOLD}[p]${R} VPN / Proxy           ${CYAN}route downloads via VPN${R}"
     echo -e "  ${BOLD}[7]${R} Google Drive setup    ${CYAN}optional${R}"
     echo -e "  ${BOLD}[8]${R} Disable Drive"
     echo -e "  ${BOLD}[9]${R} Stop bot"
@@ -600,6 +673,7 @@ show_menu() {
         4) action_logs             ;;
         5) action_yt_po_token      ;;
         6) action_yt_cookies       ;;
+        p|P) action_set_proxy      ;;
         7) action_drive_setup      ;;
         8) action_drive_disable    ;;
         9) action_stop             ;;
