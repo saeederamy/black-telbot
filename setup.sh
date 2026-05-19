@@ -438,6 +438,14 @@ action_set_proxy() {
         err "Bot is not installed yet."; press_enter; show_menu; return
     fi
 
+    # Stale code guard: old main_bot.py has no YTDLP_PROXY line, so the
+    # sed below would silently do nothing and the proxy would never apply.
+    if ! grep -q '^YTDLP_PROXY = ' "$BOT_DIR/main_bot.py"; then
+        err "Installed bot code is outdated (no proxy support)."
+        info "Run option [3] Update FIRST, then set the proxy again."
+        press_enter; show_menu; return
+    fi
+
     local current
     current=$(grep -oP 'YTDLP_PROXY\s*=\s*"\K[^"]*' "$BOT_DIR/main_bot.py" 2>/dev/null || echo "")
     if [[ -n "$current" ]]; then
@@ -474,8 +482,42 @@ action_set_proxy() {
 
     sed -i "s|^YTDLP_PROXY = .*|YTDLP_PROXY = \"$proxy\"|" "$BOT_DIR/main_bot.py"
 
+    # Confirm the change really landed in the file.
+    local saved
+    saved=$(grep -oP 'YTDLP_PROXY\s*=\s*"\K[^"]*' "$BOT_DIR/main_bot.py" 2>/dev/null || echo "")
+    if [[ "$saved" != "$proxy" ]]; then
+        err "Failed to write the proxy into main_bot.py."
+        press_enter; show_menu; return
+    fi
+
     if [[ -n "$proxy" ]]; then
-        ok "Downloads will now go through: $proxy"
+        ok "Saved. Downloads will now go through: $proxy"
+
+        # Live test: show the IP YouTube will actually see through this
+        # proxy. If it fails or matches the server's own IP, the proxy
+        # is the problem — not the bot.
+        section "Proxy check"
+        local direct_ip proxy_ip
+        direct_ip=$(curl -s -m 10 https://api.ipify.org 2>/dev/null \
+                    || curl -s -m 10 https://ifconfig.me 2>/dev/null || echo "?")
+        proxy_ip=$(curl -s -m 15 --proxy "$proxy" https://api.ipify.org 2>/dev/null \
+                   || curl -s -m 15 --proxy "$proxy" https://ifconfig.me 2>/dev/null || echo "")
+
+        info "Server direct IP : ${direct_ip:-?}"
+        if [[ -z "$proxy_ip" ]]; then
+            err "Could NOT reach the internet through the proxy."
+            info "The VPN/proxy is not running or the port/address is wrong."
+            info "Fix the proxy first, then re-run this option."
+        elif [[ "$proxy_ip" == "$direct_ip" ]]; then
+            warn "Proxy exit IP == server IP ($proxy_ip)."
+            info "This proxy does NOT change your route — YouTube will"
+            info "still see the flagged server IP. Use a real VPN whose"
+            info "exit is a residential IP."
+        else
+            ok "Proxy exit IP: $proxy_ip  (different from server — good)"
+            info "If YouTube still blocks, this proxy's IP is also flagged;"
+            info "try a different VPN endpoint or add cookies (option [6])."
+        fi
     else
         ok "Proxy disabled — downloads use a direct connection."
     fi
